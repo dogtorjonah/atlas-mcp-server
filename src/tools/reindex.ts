@@ -77,7 +77,7 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
               `atlas_reindex dry-run: ${fileCount} files (~${estimate.totalCalls} API calls)`,
               `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
               `Estimated cost: ~${formatUsd(estimate.estimatedUsd)}`,
-              `Mode: ${force ? 'FORCE (wipe + rebuild from scratch)' : 'resume-safe (skip completed files)'}`,
+              `Mode: ${force ? 'FORCE (re-extract all files, overwrite in-place)' : 'resume-safe (skip completed files)'}`,
               ``,
               `Call atlas_reindex with confirm=true to proceed.`,
               `Pass files=["path/to/file.ts"] to re-extract specific files instead.`,
