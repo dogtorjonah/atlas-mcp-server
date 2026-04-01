@@ -12,8 +12,9 @@ function readArgValue(args: string[], name: string): string | undefined {
   return index >= 0 ? args[index + 1] : undefined;
 }
 
-function readEnv(name: string): string {
-  return process.env[name] ?? '';
+function readEnv(name: string): string | undefined {
+  const value = process.env[name];
+  return value && value.trim() !== '' ? value.trim() : undefined;
 }
 
 function normalizeProvider(value: string | undefined): AtlasProviderName {
@@ -38,9 +39,9 @@ export function loadAtlasConfig(
     sourceRoot,
     dbPath,
     provider,
-    openAiApiKey: readEnv('OPENAI_API_KEY'),
-    anthropicApiKey: readEnv('ANTHROPIC_API_KEY'),
-    voyageApiKey: readEnv('VOYAGE_API_KEY'),
+    openAiApiKey: readEnv('OPENAI_API_KEY') ?? '',
+    anthropicApiKey: readEnv('ANTHROPIC_API_KEY') ?? '',
+    voyageApiKey: readEnv('VOYAGE_API_KEY') ?? '',
     ollamaBaseUrl: readArgValue(argv, '--ollama-base-url') ?? readEnv('OLLAMA_BASE_URL') ?? 'http://127.0.0.1:11434',
     sqliteVecExtension: readArgValue(argv, '--sqlite-vec-extension') ?? readEnv('ATLAS_SQLITE_VEC_EXTENSION') ?? '',
   };

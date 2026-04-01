@@ -1,6 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import Database from 'better-sqlite3';
+
+const require = createRequire(import.meta.url);
 import type {
   AtlasCrossRefs,
   AtlasFileRecord,
@@ -85,15 +88,26 @@ function readMigrationFiles(migrationDir: string): string[] {
     .map((name) => path.join(migrationDir, name));
 }
 
+function resolveSqliteVecPath(explicit?: string): string | null {
+  if (explicit) return explicit;
+  try {
+    const sv = require('sqlite-vec') as { getLoadablePath?: () => string };
+    if (typeof sv.getLoadablePath === 'function') return sv.getLoadablePath();
+  } catch { /* not installed */ }
+  return null;
+}
+
 function loadSqliteVec(db: AtlasDatabase, extensionPath?: string): void {
-  if (!extensionPath) {
+  const vecPath = resolveSqliteVecPath(extensionPath);
+  if (!vecPath) {
+    console.warn('[atlas] sqlite-vec extension not found — vector search will be unavailable');
     return;
   }
 
   try {
-    db.loadExtension(extensionPath);
-  } catch {
-    // The scaffold should still boot if the extension is unavailable locally.
+    db.loadExtension(vecPath);
+  } catch (err) {
+    console.warn(`[atlas] Failed to load sqlite-vec from ${vecPath}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -106,7 +120,21 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
   loadSqliteVec(db, options.sqliteVecExtension);
 
   for (const migrationPath of readMigrationFiles(options.migrationDir)) {
-    db.exec(fs.readFileSync(migrationPath, 'utf8'));
+    const sql = fs.readFileSync(migrationPath, 'utf8');
+    // Run everything except vec0 statements first, then attempt vec0 separately
+    const vec0Pattern = /CREATE\s+VIRTUAL\s+TABLE[^;]*USING\s+vec0\s*\([^)]*\)\s*;/gi;
+    const vec0Statements = sql.match(vec0Pattern) ?? [];
+    const sqlWithoutVec0 = sql.replace(vec0Pattern, '');
+
+    db.exec(sqlWithoutVec0);
+
+    for (const vec0Stmt of vec0Statements) {
+      try {
+        db.exec(vec0Stmt);
+      } catch {
+        console.warn('[atlas] Skipping vec0 table — sqlite-vec extension not available');
+      }
+    }
   }
 
   return db;
@@ -406,9 +434,13 @@ export function upsertEmbedding(
     return;
   }
 
-  db.prepare(
-    'INSERT INTO atlas_embeddings (file_id, embedding) VALUES (?, ?) ON CONFLICT(file_id) DO UPDATE SET embedding = excluded.embedding',
-  ).run(fileId, JSON.stringify(embedding));
+  try {
+    db.prepare(
+      'INSERT INTO atlas_embeddings (file_id, embedding) VALUES (?, ?) ON CONFLICT(file_id) DO UPDATE SET embedding = excluded.embedding',
+    ).run(fileId, JSON.stringify(embedding));
+  } catch {
+    // vec0 table may not exist if sqlite-vec extension isn't loaded
+  }
 }
 
 export function listPendingQueue(db: AtlasDatabase, workspace: string): AtlasQueueRecord[] {
@@ -424,7 +456,7 @@ export function upsertFileRecord(db: AtlasDatabase, record: AtlasFileUpsertInput
   db.prepare(
     `INSERT INTO atlas_files (
        workspace, file_path, file_hash, cluster, loc, blurb, purpose,
-       public_api, patterns, dependencies, data_flows, key_types, hazards,
+       public_api, exports, patterns, dependencies, data_flows, key_types, hazards,
       conventions, cross_refs, language, extraction_model, last_extracted, updated_at
      ) VALUES (
        @workspace, @file_path, @file_hash, @cluster, @loc, @blurb, @purpose,

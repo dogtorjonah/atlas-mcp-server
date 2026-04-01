@@ -39,9 +39,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS atlas_fts USING fts5(
   public_api,
   patterns,
   hazards,
-  cross_refs,
-  content=atlas_files,
-  content_rowid=id
+  cross_refs
 );
 
 CREATE TABLE IF NOT EXISTS import_edges (
