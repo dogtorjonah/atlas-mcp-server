@@ -1,17 +1,16 @@
-import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
 import { getAtlasFile } from '../db.js';
 import { trackQuery } from '../queryLog.js';
 
-function currentGitBlobHash(sourceRoot: string, filePath: string): string | null {
+async function currentFileHash(sourceRoot: string, filePath: string): Promise<string | null> {
   try {
-    return execSync(`git rev-parse HEAD:${filePath}`, {
-      cwd: sourceRoot,
-      encoding: 'utf8',
-      timeout: 5000,
-    }).trim();
+    const content = await fs.readFile(path.join(sourceRoot, filePath), 'utf8');
+    return createHash('sha1').update(content).digest('hex');
   } catch {
     return null;
   }
@@ -31,7 +30,7 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
         return { content: [{ type: 'text', text: `No atlas row found for ${filePath}.` }] };
       }
 
-      const currentHash = currentGitBlobHash(runtime.config.sourceRoot, filePath);
+      const currentHash = await currentFileHash(runtime.config.sourceRoot, filePath);
       const stale = currentHash && row.file_hash && currentHash !== row.file_hash ? '\n\nSTALE: file hash differs from atlas row.' : '';
       return {
         content: [{

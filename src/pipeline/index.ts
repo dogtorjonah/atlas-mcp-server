@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { getAtlasFile, listAtlasFiles, openAtlasDatabase, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
+import { getAtlasFile, listAtlasFiles, openAtlasDatabase, rebuildFts, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
 import type { AtlasCrossRefs, AtlasFileRecord, AtlasProvider, AtlasServerConfig } from '../types.js';
 import { createOpenAIProvider } from '../providers/openai.js';
 import { createAnthropicProvider } from '../providers/anthropic.js';
@@ -84,11 +84,11 @@ function pseudoEmbedding(text: string): number[] {
   return vector;
 }
 
-function formatUsd(value: number): string {
+export function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-function resolveCostProfile(config: AtlasServerConfig): CostProfile {
+export function resolveCostProfile(config: AtlasServerConfig): CostProfile {
   if (config.provider === 'anthropic' && config.anthropicApiKey) {
     return {
       providerLabel: 'anthropic',
@@ -138,7 +138,7 @@ function resolveCostProfile(config: AtlasServerConfig): CostProfile {
   };
 }
 
-function estimateInitCost(fileCount: number, profile: CostProfile): CostEstimate {
+export function estimateInitCost(fileCount: number, profile: CostProfile): CostEstimate {
   const chatCalls = fileCount * 3;
   const embeddingCalls = fileCount;
   const chatInputTokens = chatCalls * CHAT_INPUT_TOKENS_PER_CALL;
@@ -409,6 +409,45 @@ async function runSequentialPipelineBatch(
   return {
     failed: batchFailed,
     succeeded: files.length - batchFailed,
+  };
+}
+
+export interface RuntimeReindexOptions {
+  db: ReturnType<typeof openAtlasDatabase>;
+  workspace: string;
+  rootDir: string;
+  provider?: AtlasProvider;
+  concurrency: number;
+}
+
+export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise<FullPipelineResult> {
+  const { db, workspace, rootDir, provider, concurrency } = options;
+
+  const pass0 = await runPass0(rootDir, workspace, db);
+
+  const atlasRecords = new Map(
+    listAtlasFiles(db, workspace).map((record) => [record.file_path, record] as const),
+  );
+
+  const context: BatchPipelineContext = {
+    db,
+    workspace,
+    rootDir,
+    concurrency,
+    provider,
+    atlasRecords,
+    failedFiles: new Set<string>(),
+    cancelled: false,
+  };
+
+  const result = await runSequentialPipelineBatch('reindex', pass0.files, context);
+  rebuildFts(db);
+
+  return {
+    workspace,
+    rootDir,
+    filesProcessed: pass0.files.length,
+    filesFailed: result.failed,
   };
 }
 

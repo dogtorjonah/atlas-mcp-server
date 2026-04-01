@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
-import { enqueueReextract, rebuildFts } from '../db.js';
+import { enqueueReextract, listAtlasFiles } from '../db.js';
 import { notifyAtlasContextUpdated } from '../resources/context.js';
-import { runPass0 } from '../pipeline/pass0.js';
+import { estimateInitCost, formatUsd, resolveCostProfile, runRuntimeReindex } from '../pipeline/index.js';
 
 export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): void {
   server.tool(
@@ -11,8 +11,9 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
     {
       filePath: z.string().optional(),
       workspace: z.string().optional(),
+      confirm: z.boolean().optional(),
     },
-    async ({ filePath, workspace }: { filePath?: string; workspace?: string }) => {
+    async ({ filePath, workspace, confirm }: { filePath?: string; workspace?: string; confirm?: boolean }) => {
       if (!runtime.provider) {
         return {
           content: [{
@@ -32,13 +33,37 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
         };
       }
 
-      const pass0 = await runPass0(runtime.config.sourceRoot, activeWorkspace, runtime.db);
-      rebuildFts(runtime.db);
+      const fileCount = listAtlasFiles(runtime.db, activeWorkspace).length;
+      const profile = resolveCostProfile(runtime.config);
+      const estimate = estimateInitCost(fileCount, profile);
+
+      if (!confirm) {
+        return {
+          content: [{
+            type: 'text',
+            text: [
+              `atlas_reindex dry-run: ${fileCount} files (~${estimate.totalCalls} API calls)`,
+              `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
+              `Estimated cost: ~${formatUsd(estimate.estimatedUsd)}`,
+              ``,
+              `Call atlas_reindex again with confirm=true to proceed.`,
+            ].join('\n'),
+          }],
+        };
+      }
+
+      const result = await runRuntimeReindex({
+        db: runtime.db,
+        workspace: activeWorkspace,
+        rootDir: runtime.config.sourceRoot,
+        provider: runtime.provider,
+        concurrency: runtime.config.concurrency,
+      });
       await notifyAtlasContextUpdated(runtime.server);
       return {
         content: [{
           type: 'text',
-          text: `Scanned ${pass0.files.length} source files for a full reindex scaffold.`,
+          text: `Reindex complete: ${result.filesProcessed - result.filesFailed} succeeded, ${result.filesFailed} failed.`,
         }],
       };
     },
