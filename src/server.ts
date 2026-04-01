@@ -1,5 +1,6 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { openAtlasDatabase } from './db.js';
@@ -14,7 +15,7 @@ import { registerLookupTool } from './tools/lookup.js';
 import { registerReindexTool } from './tools/reindex.js';
 import { registerSearchTool } from './tools/search.js';
 import { ATLAS_CONTEXT_RESOURCE_URI, generateContextResource } from './resources/context.js';
-import type { AtlasRuntime } from './types.js';
+import type { AtlasRuntime, AtlasServerConfig } from './types.js';
 
 function createProvider(runtime: AtlasRuntime) {
   switch (runtime.config.provider) {
@@ -57,6 +58,68 @@ function parseInitArgs(argv: string[]): { targetRoot: string; configArgs: string
   };
 }
 
+function readInitProviderChoice(answer: string, fallback: AtlasServerConfig['provider']): AtlasServerConfig['provider'] {
+  const normalized = answer.trim().toLowerCase();
+  switch (normalized) {
+    case '1':
+    case 'openai':
+      return 'openai';
+    case '2':
+    case 'anthropic':
+      return 'anthropic';
+    case '3':
+    case 'gemini':
+      return 'gemini';
+    case '4':
+    case 'ollama':
+      return 'ollama';
+    default:
+      return fallback;
+  }
+}
+
+async function promptInitWizard(config: AtlasServerConfig): Promise<AtlasServerConfig> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return config;
+  }
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    console.log('');
+    console.log('[atlas-init] setup wizard');
+    console.log(`[atlas-init] workspace: ${config.workspace}`);
+    console.log(`[atlas-init] source root: ${config.sourceRoot}`);
+    console.log('[atlas-init] detected settings:');
+    console.log(`  provider=${config.provider}`);
+    console.log(`  openai key=${config.openAiApiKey ? 'yes' : 'no'}`);
+    console.log(`  anthropic key=${config.anthropicApiKey ? 'yes' : 'no'}`);
+    console.log(`  gemini key=${config.geminiApiKey ? 'yes' : 'no'}`);
+    console.log(`  ollama base url=${config.ollamaBaseUrl}`);
+    console.log(`  concurrency=${config.concurrency}`);
+
+    const useDefaults = (await rl.question('[atlas-init] Use detected settings? [Y/n] ')).trim().toLowerCase();
+    if (useDefaults === 'n' || useDefaults === 'no') {
+      const providerAnswer = await rl.question('[atlas-init] Provider [1=openai, 2=anthropic, 3=gemini, 4=ollama] (default current): ');
+      const concurrencyAnswer = await rl.question(`[atlas-init] Concurrency [${config.concurrency}]: `);
+      const parsedConcurrency = Number.parseInt(concurrencyAnswer.trim(), 10);
+
+      return {
+        ...config,
+        provider: readInitProviderChoice(providerAnswer, config.provider),
+        concurrency: Number.isFinite(parsedConcurrency) && parsedConcurrency > 0 ? parsedConcurrency : config.concurrency,
+      };
+    }
+
+    return config;
+  } finally {
+    rl.close();
+  }
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const isInit = argv[0] === 'init';
   const initArgs = isInit ? parseInitArgs(argv.slice(1)) : null;
@@ -69,12 +132,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   });
 
   if (isInit) {
+    const initConfig = initArgs?.skipCostConfirmation
+      ? config
+      : await promptInitWizard(config);
+
     console.log('[atlas-init] starting init pipeline');
     await runFullPipeline(targetRoot, {
-      ...config,
+      ...initConfig,
       sourceRoot: targetRoot,
-      dbPath: config.dbPath,
-      concurrency: config.concurrency,
+      dbPath: initConfig.dbPath,
+      concurrency: initConfig.concurrency,
       migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
       skipCostConfirmation: initArgs?.skipCostConfirmation ?? false,
     });
