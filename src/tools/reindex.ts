@@ -13,6 +13,15 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
       workspace: z.string().optional(),
     },
     async ({ filePath, workspace }: { filePath?: string; workspace?: string }) => {
+      if (!runtime.provider) {
+        return {
+          content: [{
+            type: 'text',
+            text: 'atlas_reindex requires a configured provider. Start the server with API credentials or use init mode first.',
+          }],
+        };
+      }
+
       const activeWorkspace = workspace ?? runtime.config.workspace;
 
       if (filePath) {

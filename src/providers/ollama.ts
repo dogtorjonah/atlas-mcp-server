@@ -133,6 +133,7 @@ function readText(payload: { message?: { content?: string }; response?: string }
 
 export function createOllamaProvider(config: AtlasServerConfig): AtlasProvider {
   const baseUrl = config.ollamaBaseUrl.replace(/\/$/, '');
+  const model = config.model?.trim() || OLLAMA_CHAT_MODEL;
 
   return {
     kind: 'ollama',
@@ -141,7 +142,7 @@ export function createOllamaProvider(config: AtlasServerConfig): AtlasProvider {
         message?: { content?: string };
         response?: string;
       }>(baseUrl, '/api/chat', {
-        model: OLLAMA_CHAT_MODEL,
+        model,
         stream: false,
         format: 'json',
         messages: [
@@ -167,7 +168,7 @@ export function createOllamaProvider(config: AtlasServerConfig): AtlasProvider {
         message?: { content?: string };
         response?: string;
       }>(baseUrl, '/api/chat', {
-        model: OLLAMA_CHAT_MODEL,
+        model,
         stream: false,
         format: 'json',
         messages: [

@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AtlasDatabase, AtlasImportEdgeRecord } from '../db.js';
 import { replaceImportEdges, upsertFileRecord } from '../db.js';
+import { createPhaseProgressReporter } from './progress.js';
 
 export interface Pass0ExportEntry {
   name: string;
@@ -186,8 +187,14 @@ export async function runPass0(
   const sourceFiles = await discoverFiles(absoluteRoot);
   const files: Pass0FileInfo[] = [];
   const importEdges: AtlasImportEdgeRecord[] = [];
+  const progress = createPhaseProgressReporter([{
+    key: 'pass 0',
+    label: 'Import graph',
+    total: sourceFiles.length,
+  }]);
 
   for (const absolutePath of sourceFiles) {
+    progress.begin('pass 0');
     const content = await fs.readFile(absolutePath, 'utf8');
     const relativePath = path.relative(absoluteRoot, absolutePath).replaceAll(path.sep, '/');
     const imports = extractImports(content);
@@ -245,9 +252,12 @@ export async function runPass0(
       last_extracted: null,
       cross_refs: null,
     });
+
+    progress.complete('pass 0');
   }
 
   replaceImportEdges(db, workspace, importEdges);
+  progress.finish(`pass 0 complete: ${files.length} files, ${importEdges.length} edges`);
 
   return {
     workspace,

@@ -146,6 +146,7 @@ function extractAssistantText(payload: { choices?: Array<{ message?: { content?:
 
 export function createOpenAIProvider(config: AtlasServerConfig): AtlasProvider {
   const apiKey = config.openAiApiKey;
+  const model = config.model?.trim() || OPENAI_CHAT_MODEL;
 
   return {
     kind: 'openai',
@@ -157,7 +158,7 @@ export function createOpenAIProvider(config: AtlasServerConfig): AtlasProvider {
       const payload = await postJson<{
         choices?: Array<{ message?: { content?: unknown } }>;
       }>(apiKey, '/chat/completions', {
-        model: OPENAI_CHAT_MODEL,
+        model,
         temperature: 0.1,
         max_completion_tokens: 256,
         messages: [
@@ -186,7 +187,7 @@ export function createOpenAIProvider(config: AtlasServerConfig): AtlasProvider {
       const payload = await postJson<{
         choices?: Array<{ message?: { content?: unknown } }>;
       }>(apiKey, '/chat/completions', {
-        model: OPENAI_CHAT_MODEL,
+        model,
         temperature: 0,
         max_completion_tokens: 2048,
         response_format: { type: 'json_object' },

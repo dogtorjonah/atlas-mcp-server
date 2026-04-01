@@ -144,6 +144,7 @@ function extractText(payload: {
 
 export function createGeminiProvider(config: AtlasServerConfig): AtlasProvider {
   const apiKey = config.geminiApiKey;
+  const model = config.model?.trim() || GEMINI_TEXT_MODEL;
 
   return {
     kind: 'gemini',
@@ -156,7 +157,7 @@ export function createGeminiProvider(config: AtlasServerConfig): AtlasProvider {
         candidates?: Array<{
           content?: { parts?: Array<{ text?: string }> };
         }>;
-      }>(apiKey, `/models/${GEMINI_TEXT_MODEL}:generateContent`, {
+      }>(apiKey, `/models/${model}:generateContent`, {
         generationConfig: {
           temperature: 0.1,
           responseMimeType: 'text/plain',
@@ -184,7 +185,7 @@ export function createGeminiProvider(config: AtlasServerConfig): AtlasProvider {
         candidates?: Array<{
           content?: { parts?: Array<{ text?: string }> };
         }>;
-      }>(apiKey, `/models/${GEMINI_TEXT_MODEL}:generateContent`, {
+      }>(apiKey, `/models/${model}:generateContent`, {
         generationConfig: {
           temperature: 0,
           responseMimeType: 'application/json',

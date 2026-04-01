@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { openAtlasDatabase } from './db.js';
-import { getAtlasDefaultModel, loadAtlasConfig } from './config.js';
+import { getAtlasDefaultModel, loadAtlasConfig, writeAtlasEnvFile } from './config.js';
 import { createAnthropicProvider } from './providers/anthropic.js';
 import { createGeminiProvider } from './providers/gemini.js';
 import { createOpenAIProvider } from './providers/openai.js';
@@ -20,12 +20,15 @@ import type { AtlasRuntime, AtlasServerConfig } from './types.js';
 function createProvider(runtime: AtlasRuntime) {
   switch (runtime.config.provider) {
     case 'anthropic':
+      if (!runtime.config.anthropicApiKey) return undefined;
       return createAnthropicProvider(runtime.config);
     case 'ollama':
       return createOllamaProvider(runtime.config);
     case 'gemini':
+      if (!runtime.config.geminiApiKey) return undefined;
       return createGeminiProvider(runtime.config);
     default:
+      if (!runtime.config.openAiApiKey) return undefined;
       return createOpenAIProvider(runtime.config);
   }
 }
@@ -155,6 +158,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (isInit) {
     const initConfig = initArgs?.useWizard ? await promptInitWizard(config) : config;
     targetRoot = initConfig.sourceRoot;
+    writeAtlasEnvFile(path.join(targetRoot, '.atlas', '.env'), {
+      ATLAS_PROVIDER: initConfig.provider,
+      ATLAS_MODEL: initConfig.model,
+      OPENAI_API_KEY: initConfig.openAiApiKey,
+      ANTHROPIC_API_KEY: initConfig.anthropicApiKey,
+      GEMINI_API_KEY: initConfig.geminiApiKey,
+      VOYAGE_API_KEY: initConfig.voyageApiKey,
+      OLLAMA_BASE_URL: initConfig.ollamaBaseUrl,
+    });
 
     console.log('[atlas-init] starting init pipeline');
     await runFullPipeline(targetRoot, {

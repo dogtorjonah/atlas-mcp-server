@@ -14,6 +14,7 @@ export interface Pass05Options {
   workspace: string;
   provider?: AtlasProvider;
   files?: AtlasFileRecord[];
+  sourceTextLimit?: number;
 }
 
 type Pass05FileInput = Pass0FileInfo | AtlasFileRecord;
@@ -42,10 +43,14 @@ export async function runPass05(
       continue;
     }
 
+    const limitedSourceText = typeof input.sourceTextLimit === 'number' && input.sourceTextLimit > 0
+      ? sourceText.slice(0, input.sourceTextLimit)
+      : sourceText;
+
     const blurb = input.provider
       ? await input.provider.generateBlurb({
           filePath: file.file_path,
-          sourceText,
+          sourceText: limitedSourceText,
         })
       : `Scaffold blurb for ${file.file_path.split('/').pop() ?? file.file_path}.`;
     blurbs[file.file_path] = blurb;

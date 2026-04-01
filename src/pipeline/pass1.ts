@@ -14,6 +14,7 @@ export interface Pass1Options {
   workspace: string;
   provider?: AtlasProvider;
   files?: AtlasFileRecord[];
+  sourceTextLimit?: number;
 }
 
 type Pass1FileInput = Pass0FileInfo | AtlasFileRecord;
@@ -59,10 +60,14 @@ export async function runPass1(
       continue;
     }
 
+    const limitedSourceText = typeof input.sourceTextLimit === 'number' && input.sourceTextLimit > 0
+      ? sourceText.slice(0, input.sourceTextLimit)
+      : sourceText;
+
     const extraction = input.provider
       ? await input.provider.extractFile({
           filePath: file.file_path,
-          sourceText,
+          sourceText: limitedSourceText,
           blurb: file.blurb,
         })
       : {
