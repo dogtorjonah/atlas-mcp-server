@@ -1,4 +1,4 @@
-export type AtlasProviderName = 'openai' | 'anthropic' | 'ollama';
+export type AtlasProviderName = 'openai' | 'anthropic' | 'ollama' | 'gemini';
 
 export interface AtlasPublicApiEntry {
   name: string;
@@ -122,6 +122,7 @@ export interface AtlasServerConfig {
   provider: AtlasProviderName;
   openAiApiKey: string;
   anthropicApiKey: string;
+  geminiApiKey: string;
   voyageApiKey: string;
   ollamaBaseUrl: string;
   sqliteVecExtension: string;

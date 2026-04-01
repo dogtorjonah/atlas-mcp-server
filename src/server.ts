@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { openAtlasDatabase } from './db.js';
 import { loadAtlasConfig } from './config.js';
 import { createAnthropicProvider } from './providers/anthropic.js';
+import { createGeminiProvider } from './providers/gemini.js';
 import { createOpenAIProvider } from './providers/openai.js';
 import { createOllamaProvider } from './providers/ollama.js';
 import { runFullPipeline } from './pipeline/index.js';
@@ -21,15 +22,46 @@ function createProvider(runtime: AtlasRuntime) {
       return createAnthropicProvider(runtime.config);
     case 'ollama':
       return createOllamaProvider(runtime.config);
+    case 'gemini':
+      return createGeminiProvider(runtime.config);
     default:
       return createOpenAIProvider(runtime.config);
   }
 }
 
+function parseInitArgs(argv: string[]): { targetRoot: string; configArgs: string[]; skipCostConfirmation: boolean } {
+  const filtered = argv.filter((arg) => arg !== '--yes');
+  const targetIndex = filtered.findIndex((arg) => !arg.startsWith('--'));
+
+  if (targetIndex < 0) {
+    return {
+      targetRoot: process.cwd(),
+      configArgs: filtered,
+      skipCostConfirmation: argv.includes('--yes'),
+    };
+  }
+
+  const targetArg = filtered[targetIndex];
+  if (!targetArg) {
+    return {
+      targetRoot: process.cwd(),
+      configArgs: filtered,
+      skipCostConfirmation: argv.includes('--yes'),
+    };
+  }
+
+  return {
+    targetRoot: path.resolve(targetArg!),
+    configArgs: filtered.filter((_, index) => index !== targetIndex),
+    skipCostConfirmation: argv.includes('--yes'),
+  };
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const isInit = argv[0] === 'init';
-  const targetRoot = isInit ? path.resolve(argv[1] ?? process.cwd()) : process.cwd();
-  const configArgs = isInit ? argv.slice(2) : argv;
+  const initArgs = isInit ? parseInitArgs(argv.slice(1)) : null;
+  const targetRoot = isInit ? initArgs?.targetRoot ?? process.cwd() : process.cwd();
+  const configArgs = isInit ? initArgs?.configArgs ?? [] : argv;
   const config = loadAtlasConfig(configArgs, {
     sourceRoot: targetRoot,
     dbPath: path.join(targetRoot, '.atlas', 'atlas.sqlite'),
@@ -43,6 +75,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       sourceRoot: targetRoot,
       dbPath: config.dbPath,
       migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
+      skipCostConfirmation: initArgs?.skipCostConfirmation ?? false,
     });
     return;
   }

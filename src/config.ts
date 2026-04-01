@@ -18,7 +18,7 @@ function readEnv(name: string): string | undefined {
 }
 
 function normalizeProvider(value: string | undefined): AtlasProviderName {
-  if (value === 'anthropic' || value === 'ollama') {
+  if (value === 'anthropic' || value === 'ollama' || value === 'gemini') {
     return value;
   }
   return 'openai';
@@ -41,6 +41,7 @@ export function loadAtlasConfig(
     provider,
     openAiApiKey: readEnv('OPENAI_API_KEY') ?? '',
     anthropicApiKey: readEnv('ANTHROPIC_API_KEY') ?? '',
+    geminiApiKey: readEnv('GEMINI_API_KEY') ?? '',
     voyageApiKey: readEnv('VOYAGE_API_KEY') ?? '',
     ollamaBaseUrl: readArgValue(argv, '--ollama-base-url') ?? readEnv('OLLAMA_BASE_URL') ?? 'http://127.0.0.1:11434',
     sqliteVecExtension: readArgValue(argv, '--sqlite-vec-extension') ?? readEnv('ATLAS_SQLITE_VEC_EXTENSION') ?? '',
