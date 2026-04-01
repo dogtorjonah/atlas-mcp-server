@@ -36,6 +36,7 @@ declare module '@modelcontextprotocol/sdk/server/mcp.js' {
 
   export class McpServer {
     constructor(info: { name: string; version: string });
+    readonly server: import('@modelcontextprotocol/sdk/server/index.js').Server;
     tool<Input>(
       name: string,
       schema: unknown,
@@ -47,7 +48,6 @@ declare module '@modelcontextprotocol/sdk/server/mcp.js' {
       config: { title?: string; description?: string; mimeType?: string },
       readCallback: (uri: URL) => Promise<{ contents: Array<{ uri: string; mimeType?: string; text: string }> }> | { contents: Array<{ uri: string; mimeType?: string; text: string }> },
     ): void;
-    sendResourceUpdated(params: { uri: string }): Promise<void>;
     sendResourceListChanged(): void;
     resource(name: string, uri: string, metadata: { title?: string; description?: string; mimeType?: string }, readCallback: (uri: URL) => Promise<{ contents: Array<{ uri: string; mimeType?: string; text: string }> }> | { contents: Array<{ uri: string; mimeType?: string; text: string }> }): void;
     connect(transport: unknown): Promise<void>;

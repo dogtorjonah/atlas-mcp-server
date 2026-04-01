@@ -128,6 +128,7 @@ export interface AtlasServerConfig {
   ollamaBaseUrl: string;
   concurrency: number;
   sqliteVecExtension: string;
+  force?: boolean;
 }
 
 export interface AtlasRuntime {

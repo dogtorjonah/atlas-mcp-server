@@ -1,11 +1,12 @@
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { getAtlasFile, listAtlasFiles, mapFileRecord, openAtlasDatabase, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
-import type { AtlasCrossRefs, AtlasFileExtraction, AtlasFileRecord, AtlasProvider, AtlasServerConfig } from '../types.js';
+import { getAtlasFile, listAtlasFiles, openAtlasDatabase, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
+import type { AtlasCrossRefs, AtlasFileRecord, AtlasProvider, AtlasServerConfig } from '../types.js';
 import { createOpenAIProvider } from '../providers/openai.js';
 import { createAnthropicProvider } from '../providers/anthropic.js';
 import { createOllamaProvider } from '../providers/ollama.js';
 import { createGeminiProvider } from '../providers/gemini.js';
+import { buildEmbeddingInput, toFileUpsertInput } from './shared.js';
 import { runPass0, type Pass0FileInfo } from './pass0.js';
 import { runPass05 } from './pass05.js';
 import { runPass1 } from './pass1.js';
@@ -51,46 +52,36 @@ interface CostEstimate {
   estimatedUsd: number;
 }
 
+interface BatchPipelineContext {
+  db: ReturnType<typeof openAtlasDatabase>;
+  workspace: string;
+  rootDir: string;
+  concurrency: number;
+  provider?: AtlasProvider;
+  atlasRecords: Map<string, AtlasFileRecord>;
+  failedFiles: Set<string>;
+  cancelled: boolean;
+}
+
+type BatchPhaseKey = 'pass 0.5' | 'pass 1' | 'embed' | 'pass 2';
+
+const RESCUE_TRUNCATION_LIMITS = [6000, 3000] as const;
+
 function pseudoEmbedding(text: string): number[] {
   const size = 1536;
   const vector = new Array<number>(size);
   let seed = 2166136261;
-  for (let i = 0; i < text.length; i++) {
+  for (let i = 0; i < text.length; i += 1) {
     seed ^= text.charCodeAt(i);
     seed = Math.imul(seed, 16777619);
   }
 
   let value = seed >>> 0;
-  for (let i = 0; i < size; i++) {
+  for (let i = 0; i < size; i += 1) {
     value = Math.imul(value ^ (value >>> 13), 16777619) >>> 0;
     vector[i] = ((value % 2000) / 1000) - 1;
   }
   return vector;
-}
-
-function buildEmbeddingText(file: Pass0FileInfo, blurb: string, purpose: string, patterns: string[], hazards: string[]): string {
-  return [
-    file.filePath,
-    file.cluster,
-    blurb,
-    purpose,
-    patterns.join(', '),
-    hazards.join(', '),
-    file.exports.map((entry) => `${entry.type}:${entry.name}`).join(', '),
-  ].filter(Boolean).join('\n');
-}
-
-function toPass0FileInfo(record: AtlasFileRecord, rootDir: string): Pass0FileInfo {
-  return {
-    filePath: record.file_path,
-    absolutePath: path.join(rootDir, record.file_path),
-    directory: path.dirname(record.file_path).replaceAll(path.sep, '/'),
-    cluster: record.cluster ?? 'unknown',
-    loc: record.loc,
-    fileHash: record.file_hash ?? '',
-    imports: [],
-    exports: record.exports as Pass0FileInfo['exports'],
-  };
 }
 
 function formatUsd(value: number): string {
@@ -207,33 +198,125 @@ async function runBatch<T>(
   }
 }
 
-interface BatchPipelineContext {
-  db: ReturnType<typeof openAtlasDatabase>;
-  workspace: string;
-  rootDir: string;
-  concurrency: number;
-  provider?: AtlasProvider;
-  atlasRecords: Map<string, AtlasFileRecord>;
-  failedFiles: Set<string>;
+function getAtlasRecord(context: BatchPipelineContext, filePath: string): AtlasFileRecord | null {
+  return context.atlasRecords.get(filePath) ?? getAtlasFile(context.db, context.workspace, filePath);
 }
 
-type BatchPhaseKey = 'pass 0.5' | 'pass 1' | 'embed' | 'pass 2';
-
-const BATCH_PHASES: Array<{ key: BatchPhaseKey; label: string }> = [
-  { key: 'pass 0.5', label: 'Blurbs' },
-  { key: 'pass 1', label: 'Extraction' },
-  { key: 'embed', label: 'Vectorize' },
-  { key: 'pass 2', label: 'Cross-refs' },
-];
-
-const RESCUE_TRUNCATION_LIMITS = [6000, 3000] as const;
+function refreshAtlasRecord(context: BatchPipelineContext, filePath: string): AtlasFileRecord {
+  context.atlasRecords.delete(filePath);
+  const refreshed = getAtlasFile(context.db, context.workspace, filePath);
+  if (!refreshed) {
+    throw new Error(`Atlas record missing after update: ${filePath}`);
+  }
+  context.atlasRecords.set(filePath, refreshed);
+  return refreshed;
+}
 
 function isRetryableJsonParseError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes('Unexpected end of JSON input');
 }
 
-async function runBatchedPasses(
+function formatDuration(ms: number): string {
+  const seconds = Math.max(0, ms / 1000);
+  if (seconds < 10) {
+    return `${seconds.toFixed(1)}s`;
+  }
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60).toString().padStart(2, '0');
+  return `${minutes}m ${remainder}s`;
+}
+
+async function runPhaseBatch(
+  phaseKey: BatchPhaseKey,
+  label: string,
+  files: Pass0FileInfo[],
+  context: BatchPipelineContext,
+  worker: (file: Pass0FileInfo) => Promise<void>,
+): Promise<{ failed: number; succeeded: number }> {
+  if (files.length === 0) {
+    console.log(`[atlas-init] ${label}: no files to process`);
+    return { failed: 0, succeeded: 0 };
+  }
+
+  const progress = createPhaseProgressReporter([
+    {
+      key: phaseKey,
+      label,
+      total: files.length,
+    },
+  ], {
+    singlePhase: true,
+  });
+
+  const failed = new Set<string>();
+  let succeeded = 0;
+  let phaseFailed = 0;
+  const phaseStart = Date.now();
+
+  progress.begin(phaseKey);
+
+  await runBatch(files, context.concurrency, async (file) => {
+    if (context.cancelled) {
+      return;
+    }
+
+    try {
+      await worker(file);
+      succeeded += 1;
+      context.failedFiles.delete(file.filePath);
+      progress.complete(phaseKey, file.filePath);
+    } catch (error) {
+      phaseFailed += 1;
+      failed.add(file.filePath);
+      context.failedFiles.add(file.filePath);
+      progress.fail(phaseKey, file.filePath, error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  const elapsed = formatDuration(Date.now() - phaseStart);
+  progress.finish(`${label} complete: ${succeeded} succeeded, ${phaseFailed} failed in ${elapsed}`);
+  return { failed: failed.size, succeeded };
+}
+
+async function runRetriableProviderTask(
+  filePath: string,
+  task: (sourceTextLimit?: number) => Promise<void>,
+): Promise<void> {
+  let lastError: unknown;
+  const sourceTextLimits = [undefined, ...RESCUE_TRUNCATION_LIMITS] as const;
+  for (let index = 0; index < sourceTextLimits.length; index += 1) {
+    const sourceTextLimit = sourceTextLimits[index];
+    try {
+      await task(sourceTextLimit);
+      return;
+    } catch (error) {
+      lastError = error;
+      const nextSourceTextLimit = sourceTextLimits[index + 1];
+      if (!isRetryableJsonParseError(error) || nextSourceTextLimit === undefined) {
+        throw error;
+      }
+      console.log(`[atlas-init] ${filePath}: retrying with source text limit ${nextSourceTextLimit}`);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function buildDefaultCrossRefs(file: Pass0FileInfo): AtlasCrossRefs {
+  return {
+    symbols: {},
+    total_exports_analyzed: file.exports.length,
+    total_cross_references: 0,
+    pass2_model: 'scaffold',
+    pass2_timestamp: new Date().toISOString(),
+  };
+}
+
+async function runSequentialPipelineBatch(
   batchName: string,
   files: Pass0FileInfo[],
   context: BatchPipelineContext,
@@ -243,183 +326,90 @@ async function runBatchedPasses(
     return { failed: 0, succeeded: 0 };
   }
 
-  // SIGINT handler — clean exit on Ctrl+C
-  let cancelled = false;
-  const sigintHandler = () => {
-    cancelled = true;
-    console.log('\n[atlas-init] Cancelled. Partial results saved to SQLite.');
-    process.exit(130);
-  };
-  process.on('SIGINT', sigintHandler);
-
-  const total = files.length;
-  const failed = new Set<string>();
-  const blurbs = new Map<string, string>();
-  const extractions = new Map<string, AtlasFileExtraction>();
-
-  const logPhase = (phase: string, done: number, failCount: number, startTime: number) => {
-    const elapsed = Date.now() - startTime;
-    const rate = done > 0 ? elapsed / done : 0;
-    const remaining = Math.max(total - done, 0);
-    const eta = done > 0 ? `~${formatDuration(rate * remaining)} left` : 'starting...';
-    const failStr = failCount > 0 ? ` \u2022 ${failCount} failed` : '';
-    const bar = buildProgressBar(done, total);
-    const line = `  [${phase}] ${bar}  ${done}/${total}  ${eta}${failStr}`;
-    if (process.stdout.isTTY) {
-      process.stdout.write(`\r\x1b[2K${line}`);
-    }
-  };
-
-  const finishPhase = (phase: string, done: number, failCount: number, startTime: number) => {
-    const elapsed = Date.now() - startTime;
-    const failStr = failCount > 0 ? ` \u2022 ${failCount} failed` : '';
-    const bar = buildProgressBar(done, total);
-    const line = `  [${phase}] ${bar}  ${done}/${total}  ${formatDuration(elapsed)}${failStr}`;
-    if (process.stdout.isTTY) {
-      process.stdout.write(`\r\x1b[2K${line}\n`);
-    } else {
-      console.log(line);
-    }
-  };
-
-  // ── Phase 1: Pass 0.5 (Blurbs) ──
-  let phaseStart = Date.now();
-  let phaseDone = 0;
-  let phaseFailed = 0;
-  await runBatch(files, context.concurrency, async (file) => {
-    if (cancelled) return;
-    const atlasFile = context.atlasRecords.get(file.filePath) ?? getAtlasFile(context.db, context.workspace, file.filePath);
+  const pass05Files = files.filter((file) => !context.failedFiles.has(file.filePath));
+  await runPhaseBatch('pass 0.5', 'Blurbs', pass05Files, context, async (file) => {
+    const atlasFile = getAtlasRecord(context, file.filePath);
     if (!atlasFile) {
-      failed.add(file.filePath);
-      phaseFailed++;
-      phaseDone++;
-      logPhase('pass 0.5', phaseDone, phaseFailed, phaseStart);
-      return;
+      throw new Error(`Missing atlas row for ${file.filePath}`);
     }
-    try {
-      const pass05 = await runPass05({
-        db: context.db, sourceRoot: context.rootDir, workspace: context.workspace,
-        provider: context.provider, files: [atlasFile],
+
+    await runRetriableProviderTask(file.filePath, async (sourceTextLimit) => {
+      await runPass05({
+        db: context.db,
+        sourceRoot: context.rootDir,
+        workspace: context.workspace,
+        provider: context.provider,
+        files: [atlasFile],
+        sourceTextLimit,
       });
-      blurbs.set(file.filePath, pass05.blurbs[file.filePath] ?? '');
-    } catch (err) {
-      failed.add(file.filePath);
-      phaseFailed++;
-    }
-    phaseDone++;
-    logPhase('pass 0.5', phaseDone, phaseFailed, phaseStart);
-  });
-  finishPhase('pass 0.5', phaseDone, phaseFailed, phaseStart);
+    });
 
-  // ── Phase 2: Pass 1 (Extraction) ──
-  const pass1Files = files.filter(f => !failed.has(f.filePath));
-  phaseStart = Date.now();
-  phaseDone = 0;
-  phaseFailed = 0;
-  await runBatch(pass1Files, context.concurrency, async (file) => {
-    if (cancelled) return;
-    const atlasFile = context.atlasRecords.get(file.filePath) ?? getAtlasFile(context.db, context.workspace, file.filePath);
-    if (!atlasFile) { failed.add(file.filePath); phaseFailed++; phaseDone++; logPhase('pass 1', phaseDone, phaseFailed, phaseStart); return; }
-    try {
-      const blurb = blurbs.get(file.filePath) ?? '';
-      const pass1 = await runPass1({
-        db: context.db, sourceRoot: context.rootDir, workspace: context.workspace,
-        provider: context.provider, files: [{ ...atlasFile, blurb }],
+    refreshAtlasRecord(context, file.filePath);
+  });
+
+  const pass1Files = files.filter((file) => !context.failedFiles.has(file.filePath));
+  await runPhaseBatch('pass 1', 'Extraction', pass1Files, context, async (file) => {
+    const atlasFile = getAtlasRecord(context, file.filePath);
+    if (!atlasFile) {
+      throw new Error(`Missing atlas row for ${file.filePath}`);
+    }
+
+    await runRetriableProviderTask(file.filePath, async (sourceTextLimit) => {
+      await runPass1({
+        db: context.db,
+        sourceRoot: context.rootDir,
+        workspace: context.workspace,
+        provider: context.provider,
+        files: [atlasFile],
+        sourceTextLimit,
       });
-      const extraction = pass1.files[file.filePath];
-      if (extraction) {
-        extractions.set(file.filePath, extraction);
-      } else {
-        failed.add(file.filePath);
-        phaseFailed++;
-      }
-    } catch (err) {
-      failed.add(file.filePath);
-      phaseFailed++;
-    }
-    phaseDone++;
-    logPhase('pass 1', phaseDone, phaseFailed, phaseStart);
+    });
+
+    refreshAtlasRecord(context, file.filePath);
   });
-  finishPhase('pass 1', phaseDone, phaseFailed, phaseStart);
 
-  // ── Phase 3: Embed (Vectorize) ──
-  const embedFiles = files.filter(f => !failed.has(f.filePath) && extractions.has(f.filePath));
-  phaseStart = Date.now();
-  phaseDone = 0;
-  phaseFailed = 0;
-  await runBatch(embedFiles, context.concurrency, async (file) => {
-    if (cancelled) return;
-    const extraction = extractions.get(file.filePath)!;
-    const blurb = blurbs.get(file.filePath) ?? '';
-    try {
-      const embeddingText = buildEmbeddingText(file, blurb, extraction.purpose, extraction.patterns, extraction.hazards);
-      const embedding = context.provider ? await context.provider.embedText(embeddingText) : pseudoEmbedding(embeddingText);
-      upsertEmbedding(context.db, context.workspace, file.filePath, embedding);
-    } catch (err) {
-      failed.add(file.filePath);
-      phaseFailed++;
+  const embedFiles = files.filter((file) => !context.failedFiles.has(file.filePath));
+  await runPhaseBatch('embed', 'Vectorize', embedFiles, context, async (file) => {
+    const atlasFile = getAtlasRecord(context, file.filePath);
+    if (!atlasFile) {
+      throw new Error(`Missing atlas row for ${file.filePath}`);
     }
-    phaseDone++;
-    logPhase('embed', phaseDone, phaseFailed, phaseStart);
-  });
-  finishPhase('embed', phaseDone, phaseFailed, phaseStart);
 
-  // ── Phase 4: Pass 2 (Cross-refs) ──
-  const pass2Files = files.filter(f => !failed.has(f.filePath) && extractions.has(f.filePath));
-  phaseStart = Date.now();
-  phaseDone = 0;
-  phaseFailed = 0;
-  await runBatch(pass2Files, context.concurrency, async (file) => {
-    if (cancelled) return;
-    const atlasFile = context.atlasRecords.get(file.filePath) ?? getAtlasFile(context.db, context.workspace, file.filePath);
-    if (!atlasFile) { failed.add(file.filePath); phaseFailed++; phaseDone++; logPhase('pass 2', phaseDone, phaseFailed, phaseStart); return; }
-    const extraction = extractions.get(file.filePath)!;
-    const blurb = blurbs.get(file.filePath) ?? '';
-    try {
-      const pass2 = await runPass2([file], { sourceRoot: context.rootDir, provider: context.provider });
-      const crossRefs: AtlasCrossRefs = pass2[file.filePath] ?? {
-        symbols: {}, total_exports_analyzed: file.exports.length, total_cross_references: 0,
-      };
-      upsertFileRecord(context.db, {
-        ...atlasFile, blurb,
-        purpose: extraction.purpose, public_api: extraction.public_api, exports: file.exports,
-        patterns: extraction.patterns, dependencies: extraction.dependencies,
-        data_flows: extraction.data_flows, key_types: extraction.key_types,
-        hazards: extraction.hazards, conventions: extraction.conventions,
-        cross_refs: crossRefs, extraction_model: context.provider?.kind ?? 'scaffold',
-        last_extracted: new Date().toISOString(),
-      });
-    } catch (err) {
-      failed.add(file.filePath);
-      phaseFailed++;
+    const embeddingInput = buildEmbeddingInput(atlasFile);
+    const embedding = context.provider
+      ? await context.provider.embedText(embeddingInput)
+      : pseudoEmbedding(embeddingInput);
+
+    upsertEmbedding(context.db, context.workspace, file.filePath, embedding);
+    refreshAtlasRecord(context, file.filePath);
+  });
+
+  const pass2Files = files.filter((file) => !context.failedFiles.has(file.filePath));
+  await runPhaseBatch('pass 2', 'Cross-refs', pass2Files, context, async (file) => {
+    const atlasFile = getAtlasRecord(context, file.filePath);
+    if (!atlasFile) {
+      throw new Error(`Missing atlas row for ${file.filePath}`);
     }
-    phaseDone++;
-    logPhase('pass 2', phaseDone, phaseFailed, phaseStart);
+
+    const pass2 = await runPass2([file], {
+      sourceRoot: context.rootDir,
+      provider: context.provider,
+    });
+    const crossRefs = pass2[file.filePath] ?? buildDefaultCrossRefs(file);
+
+    upsertFileRecord(context.db, toFileUpsertInput(atlasFile, {
+      cross_refs: crossRefs,
+      extraction_model: context.provider?.kind ?? atlasFile.extraction_model ?? 'scaffold',
+      last_extracted: new Date().toISOString(),
+    }));
+    refreshAtlasRecord(context, file.filePath);
   });
-  finishPhase('pass 2', phaseDone, phaseFailed, phaseStart);
 
-  // Update failed tracking
-  for (const fp of failed) { context.failedFiles.add(fp); }
-  for (const f of files) { if (!failed.has(f.filePath)) context.failedFiles.delete(f.filePath); }
-
-  process.removeListener('SIGINT', sigintHandler);
-  console.log(`[atlas-init] ${batchName} complete: ${total - failed.size} succeeded, ${failed.size} failed`);
-  return { failed: failed.size, succeeded: total - failed.size };
-}
-
-function buildProgressBar(done: number, total: number): string {
-  const width = 20;
-  const pct = total > 0 ? Math.min(done / total, 1) : 1;
-  const filled = Math.round(pct * width);
-  return '\u2588'.repeat(filled) + '\u2591'.repeat(width - filled);
-}
-
-function formatDuration(ms: number): string {
-  const s = Math.max(0, ms / 1000);
-  if (s < 60) return `${Math.round(s)}s`;
-  const m = Math.floor(s / 60);
-  const r = Math.round(s % 60);
-  return `${m}m ${r.toString().padStart(2, '0')}s`;
+  const batchFailed = files.filter((file) => context.failedFiles.has(file.filePath)).length;
+  return {
+    failed: batchFailed,
+    succeeded: files.length - batchFailed,
+  };
 }
 
 export async function runFullPipeline(projectDir: string, config: AtlasPipelineConfig): Promise<FullPipelineResult> {
@@ -429,10 +419,31 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
     sqliteVecExtension: config.sqliteVecExtension,
   });
 
-  try {
-    const workspace = config.workspace || path.basename(projectDir).toLowerCase();
-    const rootDir = path.resolve(projectDir);
+  const workspace = config.workspace || path.basename(projectDir).toLowerCase();
+  const rootDir = path.resolve(projectDir);
+  let cancelled = false;
+  let activeContext: BatchPipelineContext | undefined;
 
+  const sigintHandler = (): void => {
+    if (cancelled) {
+      return;
+    }
+    cancelled = true;
+    if (activeContext) {
+      activeContext.cancelled = true;
+    }
+    console.log('\n[atlas-init] Cancelled. Closing database and exiting with code 130.');
+    try {
+      db.close();
+    } catch {
+      // Ignore close errors during shutdown.
+    }
+    process.exit(130);
+  };
+
+  process.once('SIGINT', sigintHandler);
+
+  try {
     console.log(`[atlas-init] workspace=${workspace}`);
     console.log(`[atlas-init] scanning ${rootDir}`);
     upsertAtlasMeta(db, {
@@ -443,6 +454,7 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
         openAiApiKey: Boolean(config.openAiApiKey),
         anthropicApiKey: Boolean(config.anthropicApiKey),
         geminiApiKey: Boolean(config.geminiApiKey),
+        voyageApiKey: Boolean(config.voyageApiKey),
         ollamaBaseUrl: config.ollamaBaseUrl,
       },
     });
@@ -461,7 +473,7 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
     const costEstimate = estimateInitCost(pass0.files.length, costProfile);
     await promptInitConfirmation([
       '',
-      '🧠 Atlas — Indexing ' + workspace,
+      `🧠 Atlas — Indexing ${workspace}`,
       '',
       `Found ${pass0.files.length} TypeScript files (Pass 0 complete)`,
       `Provider: ${costProfile.providerLabel} (${costProfile.modelLabel})`,
@@ -470,57 +482,84 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
     ], config.skipCostConfirmation ?? false);
 
     const failedFiles = new Set<string>();
-    const atlasRecords = new Map(listAtlasFiles(db, workspace).map((record) => [record.file_path, record]));
-    const mainResult = await runBatchedPasses(
-      'main',
-      pass0.files,
-      {
-        db,
-        workspace,
-        rootDir,
-        concurrency: config.concurrency,
-        provider,
-        atlasRecords,
-        failedFiles,
-      },
+    const atlasRecords = new Map(
+      listAtlasFiles(db, workspace).map((record) => [record.file_path, record] as const),
     );
+
+    const mainContext: BatchPipelineContext = {
+      db,
+      workspace,
+      rootDir,
+      concurrency: config.concurrency,
+      provider,
+      atlasRecords,
+      failedFiles: new Set<string>(),
+      cancelled,
+    };
+    activeContext = mainContext;
+
+    const mainResult = await runSequentialPipelineBatch('main', pass0.files, mainContext);
     console.log(`[atlas-init] main pass complete: ${mainResult.succeeded} succeeded, ${mainResult.failed} failed`);
+    failedFiles.clear();
+    for (const filePath of mainContext.failedFiles) {
+      failedFiles.add(filePath);
+    }
 
-    console.log(`[atlas-init] validation: checking for incomplete atlas rows`);
-    const incompleteRows = db.prepare(
-      `SELECT *
-       FROM atlas_files
-       WHERE workspace = ?
-         AND (
-           coalesce(blurb, '') = ''
-           OR coalesce(purpose, '') = ''
-           OR extraction_model = 'scaffold'
-         )
-       ORDER BY file_path ASC`,
-    ).all(workspace) as Record<string, unknown>[];
+    if (config.force) {
+      console.log('[atlas-init] validation/rescue: skipped because --force was supplied');
+    } else {
+      console.log('[atlas-init] validation: checking for incomplete atlas rows');
+      const incompleteRows = db.prepare(
+        `SELECT *
+         FROM atlas_files
+         WHERE workspace = ?
+           AND (
+             coalesce(blurb, '') = ''
+             OR coalesce(purpose, '') = ''
+             OR extraction_model = 'scaffold'
+           )
+         ORDER BY file_path ASC`,
+      ).all(workspace) as Record<string, unknown>[];
 
-    const incompleteFiles = incompleteRows
-      .map(mapFileRecord)
-      .map((record) => toPass0FileInfo(record, rootDir));
+      const incompleteFiles = incompleteRows
+        .map((row) => getAtlasFile(db, workspace, String(row.file_path ?? '')))
+        .filter((record): record is AtlasFileRecord => record !== null)
+        .map((record) => ({
+          filePath: record.file_path,
+          absolutePath: path.join(rootDir, record.file_path),
+          directory: path.dirname(record.file_path).replaceAll(path.sep, '/'),
+          cluster: record.cluster ?? 'unknown',
+          loc: record.loc,
+          fileHash: record.file_hash ?? '',
+          imports: [] as string[],
+          exports: record.exports as Pass0FileInfo['exports'],
+        } satisfies Pass0FileInfo));
 
-    if (incompleteFiles.length > 0) {
-      console.log(`[atlas-init] rescue pass: ${incompleteFiles.length} incomplete files, re-processing...`);
-      const rescueResult = await runBatchedPasses(
-        'rescue',
-        incompleteFiles,
-        {
+      if (incompleteFiles.length > 0) {
+        console.log(`[atlas-init] rescue pass: ${incompleteFiles.length} incomplete files, re-processing...`);
+        const rescueContext: BatchPipelineContext = {
           db,
           workspace,
           rootDir,
           concurrency: config.concurrency,
           provider,
           atlasRecords,
-          failedFiles,
-        },
-      );
-      console.log(`[atlas-init] rescue pass complete: ${rescueResult.succeeded} succeeded, ${rescueResult.failed} failed`);
-    } else {
-      console.log('[atlas-init] rescue pass: no incomplete files found');
+          failedFiles: new Set<string>(),
+          cancelled,
+        };
+        activeContext = rescueContext;
+        const rescueResult = await runSequentialPipelineBatch('rescue', incompleteFiles, rescueContext);
+        console.log(`[atlas-init] rescue pass complete: ${rescueResult.succeeded} succeeded, ${rescueResult.failed} failed`);
+        for (const file of incompleteFiles) {
+          if (rescueContext.failedFiles.has(file.filePath)) {
+            failedFiles.add(file.filePath);
+          } else {
+            failedFiles.delete(file.filePath);
+          }
+        }
+      } else {
+        console.log('[atlas-init] rescue pass: no incomplete files found');
+      }
     }
 
     const finalFailedCount = failedFiles.size;
@@ -532,6 +571,11 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
       filesFailed: finalFailedCount,
     };
   } finally {
-    db.close();
+    process.removeListener('SIGINT', sigintHandler);
+    try {
+      db.close();
+    } catch {
+      // Ignore close errors during shutdown.
+    }
   }
 }

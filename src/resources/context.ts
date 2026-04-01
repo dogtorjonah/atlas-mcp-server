@@ -115,5 +115,5 @@ export async function notifyAtlasContextUpdated(server?: McpServer | null): Prom
     return;
   }
 
-  await server.sendResourceUpdated({ uri: RESOURCE_URI });
+  await server.server.sendResourceUpdated({ uri: RESOURCE_URI });
 }

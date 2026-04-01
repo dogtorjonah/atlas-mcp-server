@@ -34,10 +34,17 @@ function createProvider(runtime: AtlasRuntime) {
   }
 }
 
-function parseInitArgs(argv: string[]): { targetRoot: string; configArgs: string[]; skipCostConfirmation: boolean; useWizard: boolean } {
+function parseInitArgs(argv: string[]): {
+  targetRoot: string;
+  configArgs: string[];
+  skipCostConfirmation: boolean;
+  useWizard: boolean;
+  force: boolean;
+} {
   const skipCostConfirmation = argv.includes('--yes');
+  const force = argv.includes('--force');
   const useWizard = argv.includes('--wizard') || (!skipCostConfirmation && argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY);
-  const filtered = argv.filter((arg) => arg !== '--yes' && arg !== '--wizard');
+  const filtered = argv.filter((arg) => arg !== '--yes' && arg !== '--wizard' && arg !== '--force');
   const targetIndex = filtered.findIndex((arg) => !arg.startsWith('--'));
 
   if (targetIndex < 0) {
@@ -46,6 +53,7 @@ function parseInitArgs(argv: string[]): { targetRoot: string; configArgs: string
       configArgs: filtered,
       skipCostConfirmation,
       useWizard,
+      force,
     };
   }
 
@@ -56,6 +64,7 @@ function parseInitArgs(argv: string[]): { targetRoot: string; configArgs: string
       configArgs: filtered,
       skipCostConfirmation,
       useWizard,
+      force,
     };
   }
 
@@ -64,6 +73,7 @@ function parseInitArgs(argv: string[]): { targetRoot: string; configArgs: string
     configArgs: filtered.filter((_, index) => index !== targetIndex),
     skipCostConfirmation,
     useWizard,
+    force,
   };
 }
 
@@ -159,6 +169,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (isInit) {
     const initConfig = initArgs?.useWizard ? await promptInitWizard(config) : config;
     targetRoot = initConfig.sourceRoot;
+    if (initArgs?.force) {
+      console.log('[atlas-init] --force supplied; bypassing resume checks when supported');
+    }
     writeAtlasEnvFile(path.join(targetRoot, '.atlas', '.env'), {
       ATLAS_PROVIDER: initConfig.provider,
       ATLAS_MODEL: initConfig.model,
@@ -171,14 +184,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
     console.log('[atlas-init] starting init pipeline');
     await runFullPipeline(targetRoot, {
-    ...initConfig,
-    sourceRoot: targetRoot,
-    dbPath: initConfig.dbPath,
-    model: initConfig.model,
-    concurrency: initConfig.concurrency,
-    migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
-    skipCostConfirmation: initArgs?.skipCostConfirmation ?? false,
-  });
+      ...initConfig,
+      sourceRoot: targetRoot,
+      dbPath: initConfig.dbPath,
+      model: initConfig.model,
+      concurrency: initConfig.concurrency,
+      migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
+      skipCostConfirmation: initArgs?.skipCostConfirmation ?? false,
+      force: initArgs?.force ?? false,
+    });
     return;
   }
 
