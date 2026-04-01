@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { AtlasDatabase } from '../db.js';
+import { getAtlasFile } from '../db.js';
 import type { AtlasProvider } from '../types.js';
 import type { Pass0FileInfo } from './pass0.js';
 
@@ -32,7 +35,17 @@ export interface Pass2Options {
   provider?: AtlasProvider;
   contextLines?: number;
   maxGrepHits?: number;
+  /** Atlas DB for blurb lookups in tiered proximity context */
+  db?: AtlasDatabase;
+  /** Workspace name for DB lookups */
+  workspace?: string;
 }
+
+// Proximity tiers for caller context
+const SAME_DIR_HOPS = 0;
+const NEAR_HOPS_MAX = 2;
+const FULL_FILE_CHAR_LIMIT = 8000;   // ~200 lines — covers most TS files in full
+const BATCH_PROMPT_CHAR_LIMIT = 40000; // well within gpt-5.4-mini's 128k token window
 
 interface ExportedSymbol {
   name: string;
@@ -322,6 +335,109 @@ export function persistPass2CrossRefs(
   ).run(JSON.stringify(crossRefs), workspace, filePath);
 }
 
+function countDirectoryHops(sourceFile: string, callerFile: string): number {
+  const sourceDir = path.dirname(sourceFile);
+  const callerDir = path.dirname(callerFile);
+  const rel = path.relative(sourceDir, callerDir);
+  if (rel === '') return SAME_DIR_HOPS;
+  return rel.split('/').filter((part) => part !== '').length;
+}
+
+async function buildCallerEntry(
+  callerFile: string,
+  snippet: string,
+  hops: number,
+  sourceRoot: string,
+  db?: AtlasDatabase,
+  workspace?: string,
+): Promise<string> {
+  if (hops === SAME_DIR_HOPS) {
+    try {
+      const content = await readFile(path.join(sourceRoot, callerFile), 'utf8');
+      return `[SAME DIR] ${callerFile}\n${content.slice(0, FULL_FILE_CHAR_LIMIT)}`;
+    } catch {
+      return `[SAME DIR] ${callerFile}\n${snippet}`;
+    }
+  }
+  if (hops <= NEAR_HOPS_MAX && db && workspace) {
+    const record = getAtlasFile(db, workspace, callerFile);
+    const blurb = record?.blurb || record?.purpose || '';
+    return `[NEAR ${hops}hop] ${callerFile}${blurb ? `\nPurpose: ${blurb}` : ''}\nUsage: ${snippet}`;
+  }
+  return `[FAR] ${callerFile}\nUsage: ${snippet}`;
+}
+
+async function buildFileBatchPrompt(
+  file: Pass0FileInfo,
+  symbolGroups: Array<{ symbol: ExportedSymbol; groups: GrepMatchGroup[] }>,
+  options: Pass2Options,
+): Promise<string> {
+  const parts: string[] = [
+    `File: ${file.filePath}`,
+    '',
+    'EXPORTED SYMBOLS AND THEIR CALLERS:',
+    '=====================================',
+  ];
+
+  let totalChars = parts.join('\n').length;
+
+  for (const { symbol, groups } of symbolGroups) {
+    if (groups.length === 0) {
+      parts.push(`\nSymbol: ${symbol.name} (${symbol.type})\nNo callers found.`);
+      continue;
+    }
+
+    const symbolHeader = `\nSymbol: ${symbol.name} (${symbol.type})\nCallers (${groups.length}):`;
+    parts.push(symbolHeader);
+    totalChars += symbolHeader.length;
+
+    // Sort: same dir first, then by hop count
+    const sortedGroups = [...groups].sort((a, b) => {
+      const hopsA = countDirectoryHops(file.filePath, a.file);
+      const hopsB = countDirectoryHops(file.filePath, b.file);
+      return hopsA - hopsB || b.matchCount - a.matchCount;
+    });
+
+    for (const group of sortedGroups) {
+      if (totalChars >= BATCH_PROMPT_CHAR_LIMIT) {
+        parts.push(`  ... (${groups.length - sortedGroups.indexOf(group)} more callers truncated)`);
+        break;
+      }
+      const hops = countDirectoryHops(file.filePath, group.file);
+      const snippet = normalizeContextLines(group.lines, 400);
+      const entry = await buildCallerEntry(group.file, snippet, hops, options.sourceRoot, options.db, options.workspace);
+      parts.push(entry);
+      totalChars += entry.length;
+    }
+  }
+
+  parts.push(
+    '',
+    'Return JSON with one key per symbol name:',
+    '{ "<symbolName>": { "type": string, "call_sites": [{ "file": string, "usage_type": string, "count": number, "context": string }], "total_usages": number, "blast_radius": "local"|"narrow"|"moderate"|"broad" } }',
+  );
+
+  return parts.join('\n');
+}
+
+function parseFileBatchResult(
+  result: unknown,
+  symbolNames: string[],
+): Record<string, ProviderCrossRefSymbol | null> {
+  const out: Record<string, ProviderCrossRefSymbol | null> = {};
+  for (const name of symbolNames) {
+    out[name] = null;
+  }
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return out;
+  const record = result as Record<string, unknown>;
+  for (const name of symbolNames) {
+    if (name in record) {
+      out[name] = coerceProviderSymbol(record[name]);
+    }
+  }
+  return out;
+}
+
 export async function runPass2(
   files: Pass0FileInfo[],
   options: Pass2Options,
@@ -335,25 +451,30 @@ export async function runPass2(
     const exportedSymbols = extractExportedSymbols(sourceText);
     const symbols: Record<string, Pass2SymbolCrossRef> = {};
 
+    // Collect grep results for all symbols up front
+    const symbolGroups: Array<{ symbol: ExportedSymbol; groups: GrepMatchGroup[] }> = [];
     for (const exportedSymbol of exportedSymbols) {
       const groups = runGrep(exportedSymbol.name, options.sourceRoot, file.filePath, contextLines);
-      let providerResult: ProviderCrossRefSymbol | null = null;
-      if (options.provider) {
-        try {
-          providerResult = coerceProviderSymbol(await options.provider.extractCrossRefs({
-            filePath: file.filePath,
-            symbolName: exportedSymbol.name,
-            sourceText: buildPass2Prompt(
-              exportedSymbol.name,
-              exportedSymbol.type,
-              groups.map((group) => `${group.file}\n${group.lines.join('\n')}`).join('\n\n'),
-            ),
-          }));
-        } catch {
-          providerResult = null;
-        }
-      }
+      symbolGroups.push({ symbol: exportedSymbol, groups });
+    }
 
+    // One AI call per file (batch all symbols), with tiered proximity context
+    let batchResult: Record<string, ProviderCrossRefSymbol | null> = {};
+    if (options.provider && exportedSymbols.length > 0) {
+      try {
+        const prompt = await buildFileBatchPrompt(file, symbolGroups, options);
+        const raw = await options.provider.extractCrossRefs({
+          filePath: file.filePath,
+          sourceText: prompt,
+        });
+        batchResult = parseFileBatchResult(raw, exportedSymbols.map((s) => s.name));
+      } catch {
+        // Fall through to heuristic for all symbols
+      }
+    }
+
+    for (const { symbol: exportedSymbol, groups } of symbolGroups) {
+      const providerResult = batchResult[exportedSymbol.name] ?? null;
       symbols[exportedSymbol.name] = coerceCrossRefSymbol(
         exportedSymbol.name,
         exportedSymbol.type,

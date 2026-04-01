@@ -417,6 +417,13 @@ export function listImportedBy(db: AtlasDatabase, workspace: string, targetFile:
   return rows.map((row) => row.source_file);
 }
 
+export function listImports(db: AtlasDatabase, workspace: string, sourceFile: string): string[] {
+  const rows = db.prepare(
+    'SELECT target_file FROM import_edges WHERE workspace = ? AND source_file = ?',
+  ).all(workspace, sourceFile) as Array<{ target_file: string }>;
+  return rows.map((row) => row.target_file);
+}
+
 export function getAtlasFileByWorkspacePath(
   db: AtlasDatabase,
   workspace: string,

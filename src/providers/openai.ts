@@ -224,8 +224,38 @@ export function createOpenAIProvider(config: AtlasServerConfig): AtlasProvider {
       }
       return embedding;
     },
-    async extractCrossRefs(): Promise<never> {
-      notConfigured('Pass 2 is not wired yet for the OpenAI atlas provider');
+    async extractCrossRefs({ sourceText }): Promise<unknown> {
+      if (!apiKey) {
+        notConfigured('OPENAI_API_KEY is required for the OpenAI atlas provider');
+      }
+
+      if (!sourceText) return null;
+
+      const payload = await postJson<{
+        choices?: Array<{ message?: { content?: unknown } }>;
+      }>(apiKey, '/chat/completions', {
+        model,
+        temperature: 0,
+        max_completion_tokens: 2048,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a senior TypeScript architect analyzing cross-file symbol usage. You will receive a file\'s exported symbols with tiered caller context (same-dir callers shown in full, near callers with blurb+snippet, far callers with snippet only). Output ONLY valid JSON: one key per symbol name, each with { "type": string, "call_sites": [{ "file": string, "usage_type": string, "count": number, "context": string }], "total_usages": number, "blast_radius": "local"|"narrow"|"moderate"|"broad" }',
+          },
+          {
+            role: 'user',
+            content: sourceText,
+          },
+        ],
+      });
+
+      const text = stripCodeFences(extractAssistantText(payload));
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
     },
   };
 }

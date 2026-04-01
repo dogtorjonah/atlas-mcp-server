@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { writeFileSync, unlinkSync } from 'node:fs';
 import { getAtlasFile, getFilePhase, listAtlasFiles, openAtlasDatabase, rebuildFts, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
 import type { AtlasCrossRefs, AtlasFileRecord, AtlasProvider, AtlasServerConfig } from '../types.js';
 import { createOpenAIProvider } from '../providers/openai.js';
@@ -238,6 +239,7 @@ async function runPhaseBatch(
   files: Pass0FileInfo[],
   context: BatchPipelineContext,
   worker: (file: Pass0FileInfo) => Promise<void>,
+  onProgress?: (event: 'complete' | 'fail') => void,
 ): Promise<{ failed: number; succeeded: number }> {
   if (files.length === 0) {
     console.log(`[atlas-init] ${label}: no files to process`);
@@ -271,11 +273,13 @@ async function runPhaseBatch(
       succeeded += 1;
       context.failedFiles.delete(file.filePath);
       progress.complete(phaseKey, file.filePath);
+      onProgress?.('complete');
     } catch (error) {
       phaseFailed += 1;
       failed.add(file.filePath);
       context.failedFiles.add(file.filePath);
       progress.fail(phaseKey, file.filePath, error instanceof Error ? error.message : String(error));
+      onProgress?.('fail');
     }
   });
 
@@ -339,6 +343,33 @@ async function runSequentialPipelineBatch(
     return { failed: 0, succeeded: 0 };
   }
 
+  // Status file — written to .atlas/status.json during pipeline execution
+  const statusPath = path.join(context.rootDir, '.atlas', 'status.json');
+  const startedAt = new Date().toISOString();
+
+  interface PhaseCounter { total: number; completed: number; failed: number; done: boolean }
+  const c05: PhaseCounter = { total: 0, completed: 0, failed: 0, done: false };
+  const c1: PhaseCounter  = { total: 0, completed: 0, failed: 0, done: false };
+  const cem: PhaseCounter = { total: 0, completed: 0, failed: 0, done: false };
+  const c2: PhaseCounter  = { total: 0, completed: 0, failed: 0, done: false };
+
+  function writeStatus(currentPhase: string): void {
+    try {
+      writeFileSync(statusPath, JSON.stringify({
+        currentPhase, startedAt,
+        phases: { 'pass 0.5': c05, 'pass 1': c1, 'embed': cem, 'pass 2': c2 },
+      }), 'utf8');
+    } catch { /* ignore write failures */ }
+  }
+
+  function makeOnProgress(counter: PhaseCounter, phaseKey: string): (event: 'complete' | 'fail') => void {
+    return (event) => {
+      if (event === 'complete') counter.completed++;
+      else counter.failed++;
+      writeStatus(phaseKey);
+    };
+  }
+
   // Build resume map: check which phase each file has reached
   const filePhases = new Map<string, PhaseLevel>();
   let skippedTotal = 0;
@@ -367,6 +398,8 @@ async function runSequentialPipelineBatch(
     const skipped = files.length - context.failedFiles.size - pass05Files.length;
     console.log(`[atlas-init] ${batchName}/blurbs: skipping ${skipped} already-complete files`);
   }
+  c05.total = pass05Files.length;
+  writeStatus('pass 0.5');
   await runPhaseBatch('pass 0.5', 'Blurbs', pass05Files, context, async (file) => {
     const atlasFile = getAtlasRecord(context, file.filePath);
     if (!atlasFile) {
@@ -385,7 +418,8 @@ async function runSequentialPipelineBatch(
     });
 
     refreshAtlasRecord(context, file.filePath);
-  });
+  }, makeOnProgress(c05, 'pass 0.5'));
+  c05.done = true;
 
   const pass1Files = files.filter((file) => {
     if (context.failedFiles.has(file.filePath)) return false;
@@ -395,6 +429,8 @@ async function runSequentialPipelineBatch(
     const skipped = files.length - context.failedFiles.size - pass1Files.length;
     console.log(`[atlas-init] ${batchName}/extraction: skipping ${skipped} already-complete files`);
   }
+  c1.total = pass1Files.length;
+  writeStatus('pass 1');
   await runPhaseBatch('pass 1', 'Extraction', pass1Files, context, async (file) => {
     const atlasFile = getAtlasRecord(context, file.filePath);
     if (!atlasFile) {
@@ -413,7 +449,8 @@ async function runSequentialPipelineBatch(
     });
 
     refreshAtlasRecord(context, file.filePath);
-  });
+  }, makeOnProgress(c1, 'pass 1'));
+  c1.done = true;
 
   const embedFiles = files.filter((file) => {
     if (context.failedFiles.has(file.filePath)) return false;
@@ -425,6 +462,8 @@ async function runSequentialPipelineBatch(
     const skipped = files.length - context.failedFiles.size - embedFiles.length;
     console.log(`[atlas-init] ${batchName}/embed: skipping ${skipped} already-complete files`);
   }
+  cem.total = embedFiles.length;
+  writeStatus('embed');
   await runPhaseBatch('embed', 'Vectorize', embedFiles, context, async (file) => {
     const atlasFile = getAtlasRecord(context, file.filePath);
     if (!atlasFile) {
@@ -438,7 +477,8 @@ async function runSequentialPipelineBatch(
 
     upsertEmbedding(context.db, context.workspace, file.filePath, embedding);
     refreshAtlasRecord(context, file.filePath);
-  });
+  }, makeOnProgress(cem, 'embed'));
+  cem.done = true;
 
   const pass2Files = files.filter((file) => {
     if (context.failedFiles.has(file.filePath)) return false;
@@ -448,6 +488,8 @@ async function runSequentialPipelineBatch(
     const skipped = files.length - context.failedFiles.size - pass2Files.length;
     console.log(`[atlas-init] ${batchName}/cross-refs: skipping ${skipped} already-complete files`);
   }
+  c2.total = pass2Files.length;
+  writeStatus('pass 2');
   await runPhaseBatch('pass 2', 'Cross-refs', pass2Files, context, async (file) => {
     const atlasFile = getAtlasRecord(context, file.filePath);
     if (!atlasFile) {
@@ -457,6 +499,8 @@ async function runSequentialPipelineBatch(
     const pass2 = await runPass2([file], {
       sourceRoot: context.rootDir,
       provider: context.provider,
+      db: context.db,
+      workspace: context.workspace,
     });
     const crossRefs = pass2[file.filePath] ?? buildDefaultCrossRefs(file);
 
@@ -466,7 +510,11 @@ async function runSequentialPipelineBatch(
       last_extracted: new Date().toISOString(),
     }));
     refreshAtlasRecord(context, file.filePath);
-  });
+  }, makeOnProgress(c2, 'pass 2'));
+  c2.done = true;
+
+  // Remove status file — pipeline complete
+  try { unlinkSync(statusPath); } catch { /* ignore */ }
 
   const batchFailed = files.filter((file) => context.failedFiles.has(file.filePath)).length;
   return {

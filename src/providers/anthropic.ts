@@ -332,8 +332,65 @@ export function createAnthropicProvider(config: AtlasServerConfig): AtlasProvide
       }
       return openAIEmbedding(config, text);
     },
-    async extractCrossRefs(): Promise<never> {
-      notConfigured('Pass 2 is not wired yet for the Anthropic atlas provider');
+    async extractCrossRefs({ sourceText }): Promise<unknown> {
+      if (!apiKey) {
+        notConfigured('ANTHROPIC_API_KEY is required for the Anthropic atlas provider');
+      }
+
+      if (!sourceText) return null;
+
+      const payload = await postJson<{
+        content?: Array<{ type?: string; input?: unknown }>;
+      }>(apiKey, '/messages', {
+        model: ANTHROPIC_MODEL,
+        max_tokens: 2048,
+        temperature: 0,
+        system: 'You are a senior TypeScript architect analyzing cross-file symbol usage. You will receive a file\'s exported symbols with tiered caller context. Use the provided tool exactly once to return cross-reference data for all symbols.',
+        messages: [
+          {
+            role: 'user',
+            content: sourceText,
+          },
+        ],
+        tools: [{
+          name: 'extract_cross_refs',
+          description: 'Return cross-reference data for all exported symbols in the file.',
+          input_schema: {
+            type: 'object',
+            additionalProperties: true,
+            description: 'Keys are symbol names. Each value describes how that symbol is used across the codebase.',
+            patternProperties: {
+              '.*': {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  type: { type: 'string' },
+                  call_sites: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        file: { type: 'string' },
+                        usage_type: { type: 'string' },
+                        count: { type: 'number' },
+                        context: { type: 'string' },
+                      },
+                      required: ['file', 'usage_type', 'count', 'context'],
+                    },
+                  },
+                  total_usages: { type: 'number' },
+                  blast_radius: { type: 'string', enum: ['local', 'narrow', 'moderate', 'broad'] },
+                },
+                required: ['type', 'call_sites', 'total_usages', 'blast_radius'],
+              },
+            },
+          },
+        }],
+        tool_choice: { type: 'tool', name: 'extract_cross_refs' },
+      } as Record<string, unknown>);
+
+      return extractToolInput(payload);
     },
   };
 }

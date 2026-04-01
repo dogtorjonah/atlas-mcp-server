@@ -197,8 +197,34 @@ export function createOllamaProvider(config: AtlasServerConfig): AtlasProvider {
       }
       throw new Error('Ollama returned no embedding vector');
     },
-    async extractCrossRefs(): Promise<never> {
-      notConfigured('Pass 2 is not wired yet for the Ollama atlas provider');
+    async extractCrossRefs({ sourceText }): Promise<unknown> {
+      if (!sourceText) return null;
+
+      const payload = await postJson<{
+        message?: { content?: string };
+        response?: string;
+      }>(baseUrl, '/api/chat', {
+        model,
+        stream: false,
+        format: 'json',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a senior TypeScript architect analyzing cross-file symbol usage. Output ONLY valid JSON: one key per symbol name, each with { "type": string, "call_sites": [{ "file": string, "usage_type": string, "count": number, "context": string }], "total_usages": number, "blast_radius": "local"|"narrow"|"moderate"|"broad" }',
+          },
+          {
+            role: 'user',
+            content: sourceText,
+          },
+        ],
+      });
+
+      const text = stripCodeFences(readText(payload));
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
     },
   };
 }

@@ -222,8 +222,36 @@ export function createGeminiProvider(config: AtlasServerConfig): AtlasProvider {
       }
       return embedding;
     },
-    async extractCrossRefs(): Promise<never> {
-      notConfigured('Pass 2 is not wired yet for the Gemini atlas provider');
+    async extractCrossRefs({ sourceText }): Promise<unknown> {
+      if (!apiKey) {
+        notConfigured('GEMINI_API_KEY is required for the Gemini atlas provider');
+      }
+
+      if (!sourceText) return null;
+
+      const payload = await postJson<{
+        candidates?: Array<{
+          content?: { parts?: Array<{ text?: string }> };
+        }>;
+      }>(apiKey, `/models/${model}:generateContent`, {
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: 'application/json',
+        },
+        contents: [{
+          role: 'user',
+          parts: [{
+            text: `You are a senior TypeScript architect analyzing cross-file symbol usage. You will receive a file's exported symbols with tiered caller context (same-dir callers shown in full, near callers with blurb+snippet, far callers with snippet only).\n\n${sourceText}\n\nOutput ONLY valid JSON: one key per symbol name, each with { "type": string, "call_sites": [{ "file": string, "usage_type": string, "count": number, "context": string }], "total_usages": number, "blast_radius": "local"|"narrow"|"moderate"|"broad" }`,
+          }],
+        }],
+      });
+
+      const text = stripCodeFences(extractText(payload));
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
     },
   };
 }
