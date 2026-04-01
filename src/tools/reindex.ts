@@ -6,6 +6,8 @@ import { notifyAtlasContextUpdated } from '../resources/context.js';
 import { estimateInitCost, formatUsd, resolveCostProfile, runRuntimeReindex } from '../pipeline/index.js';
 
 let activeReindex: Promise<void> | null = null;
+let reindexStartedAt: Date | null = null;
+let reindexFileCount: number | null = null;
 
 export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): void {
   server.tool(
@@ -40,6 +42,19 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
       const estimate = estimateInitCost(fileCount, profile);
 
       if (!confirm) {
+        if (activeReindex && reindexStartedAt) {
+          const elapsed = Math.round((Date.now() - reindexStartedAt.getTime()) / 1000);
+          return {
+            content: [{
+              type: 'text',
+              text: [
+                `Reindex in progress: ${reindexFileCount ?? '?'} files, running for ${elapsed}s`,
+                `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
+                `Atlas context will update when complete.`,
+              ].join('\n'),
+            }],
+          };
+        }
         return {
           content: [{
             type: 'text',
@@ -60,6 +75,8 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
         };
       }
 
+      reindexStartedAt = new Date();
+      reindexFileCount = fileCount;
       activeReindex = runRuntimeReindex({
         db: runtime.db,
         workspace: activeWorkspace,
@@ -73,6 +90,8 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
         console.error('[atlas-reindex] failed:', error instanceof Error ? error.message : String(error));
       }).finally(() => {
         activeReindex = null;
+        reindexStartedAt = null;
+        reindexFileCount = null;
       });
 
       return {
