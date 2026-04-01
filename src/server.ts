@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { openAtlasDatabase } from './db.js';
-import { loadAtlasConfig } from './config.js';
+import { getAtlasDefaultModel, loadAtlasConfig } from './config.js';
 import { createAnthropicProvider } from './providers/anthropic.js';
 import { createGeminiProvider } from './providers/gemini.js';
 import { createOpenAIProvider } from './providers/openai.js';
@@ -30,15 +30,18 @@ function createProvider(runtime: AtlasRuntime) {
   }
 }
 
-function parseInitArgs(argv: string[]): { targetRoot: string; configArgs: string[]; skipCostConfirmation: boolean } {
-  const filtered = argv.filter((arg) => arg !== '--yes');
+function parseInitArgs(argv: string[]): { targetRoot: string; configArgs: string[]; skipCostConfirmation: boolean; useWizard: boolean } {
+  const skipCostConfirmation = argv.includes('--yes');
+  const useWizard = argv.includes('--wizard') || (!skipCostConfirmation && argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY);
+  const filtered = argv.filter((arg) => arg !== '--yes' && arg !== '--wizard');
   const targetIndex = filtered.findIndex((arg) => !arg.startsWith('--'));
 
   if (targetIndex < 0) {
     return {
       targetRoot: process.cwd(),
       configArgs: filtered,
-      skipCostConfirmation: argv.includes('--yes'),
+      skipCostConfirmation,
+      useWizard,
     };
   }
 
@@ -47,14 +50,16 @@ function parseInitArgs(argv: string[]): { targetRoot: string; configArgs: string
     return {
       targetRoot: process.cwd(),
       configArgs: filtered,
-      skipCostConfirmation: argv.includes('--yes'),
+      skipCostConfirmation,
+      useWizard,
     };
   }
 
   return {
     targetRoot: path.resolve(targetArg!),
     configArgs: filtered.filter((_, index) => index !== targetIndex),
-    skipCostConfirmation: argv.includes('--yes'),
+    skipCostConfirmation,
+    useWizard,
   };
 }
 
@@ -91,30 +96,46 @@ async function promptInitWizard(config: AtlasServerConfig): Promise<AtlasServerC
   try {
     console.log('');
     console.log('[atlas-init] setup wizard');
-    console.log(`[atlas-init] workspace: ${config.workspace}`);
-    console.log(`[atlas-init] source root: ${config.sourceRoot}`);
-    console.log('[atlas-init] detected settings:');
-    console.log(`  provider=${config.provider}`);
-    console.log(`  openai key=${config.openAiApiKey ? 'yes' : 'no'}`);
-    console.log(`  anthropic key=${config.anthropicApiKey ? 'yes' : 'no'}`);
-    console.log(`  gemini key=${config.geminiApiKey ? 'yes' : 'no'}`);
-    console.log(`  ollama base url=${config.ollamaBaseUrl}`);
-    console.log(`  concurrency=${config.concurrency}`);
+    const sourceRootAnswer = await rl.question(`[atlas-init] Codebase path [${config.sourceRoot}]: `);
+    const sourceRoot = path.resolve(sourceRootAnswer.trim() || config.sourceRoot);
+    const workspaceDefault = path.basename(sourceRoot).toLowerCase();
+    const workspaceAnswer = await rl.question(`[atlas-init] Workspace name [${workspaceDefault}]: `);
+    const workspace = workspaceAnswer.trim() || workspaceDefault;
+    const providerAnswer = await rl.question(`[atlas-init] Provider [1=openai, 2=anthropic, 3=gemini, 4=ollama] [${config.provider}]: `);
+    const provider = providerAnswer.trim() ? readInitProviderChoice(providerAnswer, config.provider) : config.provider;
+    const modelDefault = config.model || getAtlasDefaultModel(provider);
+    const modelAnswer = await rl.question(`[atlas-init] Model [${modelDefault}]: `);
+    const model = modelAnswer.trim() || modelDefault;
+    const concurrencyAnswer = await rl.question(`[atlas-init] Concurrency [${config.concurrency}]: `);
+    const parsedConcurrency = Number.parseInt(concurrencyAnswer.trim(), 10);
+    const concurrency = Number.isFinite(parsedConcurrency) && parsedConcurrency > 0 ? parsedConcurrency : config.concurrency;
 
-    const useDefaults = (await rl.question('[atlas-init] Use detected settings? [Y/n] ')).trim().toLowerCase();
-    if (useDefaults === 'n' || useDefaults === 'no') {
-      const providerAnswer = await rl.question('[atlas-init] Provider [1=openai, 2=anthropic, 3=gemini, 4=ollama] (default current): ');
-      const concurrencyAnswer = await rl.question(`[atlas-init] Concurrency [${config.concurrency}]: `);
-      const parsedConcurrency = Number.parseInt(concurrencyAnswer.trim(), 10);
+    const openAiApiKey = provider === 'openai'
+      ? (config.openAiApiKey || (await rl.question('[atlas-init] OpenAI API key (blank for scaffold): ')).trim())
+      : config.openAiApiKey;
+    const anthropicApiKey = provider === 'anthropic'
+      ? (config.anthropicApiKey || (await rl.question('[atlas-init] Anthropic API key (blank for scaffold): ')).trim())
+      : config.anthropicApiKey;
+    const geminiApiKey = provider === 'gemini'
+      ? (config.geminiApiKey || (await rl.question('[atlas-init] Gemini API key (blank for scaffold): ')).trim())
+      : config.geminiApiKey;
+    const ollamaBaseUrl = provider === 'ollama'
+      ? (await rl.question(`[atlas-init] Ollama base URL [${config.ollamaBaseUrl}]: `)).trim() || config.ollamaBaseUrl
+      : config.ollamaBaseUrl;
 
-      return {
-        ...config,
-        provider: readInitProviderChoice(providerAnswer, config.provider),
-        concurrency: Number.isFinite(parsedConcurrency) && parsedConcurrency > 0 ? parsedConcurrency : config.concurrency,
-      };
-    }
-
-    return config;
+    return {
+      ...config,
+      sourceRoot,
+      workspace,
+      dbPath: path.join(sourceRoot, '.atlas', 'atlas.sqlite'),
+      provider,
+      model,
+      concurrency,
+      openAiApiKey,
+      anthropicApiKey,
+      geminiApiKey,
+      ollamaBaseUrl,
+    };
   } finally {
     rl.close();
   }
@@ -123,7 +144,7 @@ async function promptInitWizard(config: AtlasServerConfig): Promise<AtlasServerC
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const isInit = argv[0] === 'init';
   const initArgs = isInit ? parseInitArgs(argv.slice(1)) : null;
-  const targetRoot = isInit ? initArgs?.targetRoot ?? process.cwd() : process.cwd();
+  let targetRoot = isInit ? initArgs?.targetRoot ?? process.cwd() : process.cwd();
   const configArgs = isInit ? initArgs?.configArgs ?? [] : argv;
   const config = loadAtlasConfig(configArgs, {
     sourceRoot: targetRoot,
@@ -132,19 +153,19 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   });
 
   if (isInit) {
-    const initConfig = initArgs?.skipCostConfirmation
-      ? config
-      : await promptInitWizard(config);
+    const initConfig = initArgs?.useWizard ? await promptInitWizard(config) : config;
+    targetRoot = initConfig.sourceRoot;
 
     console.log('[atlas-init] starting init pipeline');
     await runFullPipeline(targetRoot, {
-      ...initConfig,
-      sourceRoot: targetRoot,
-      dbPath: initConfig.dbPath,
-      concurrency: initConfig.concurrency,
-      migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
-      skipCostConfirmation: initArgs?.skipCostConfirmation ?? false,
-    });
+    ...initConfig,
+    sourceRoot: targetRoot,
+    dbPath: initConfig.dbPath,
+    model: initConfig.model,
+    concurrency: initConfig.concurrency,
+    migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
+    skipCostConfirmation: initArgs?.skipCostConfirmation ?? false,
+  });
     return;
   }
 

@@ -5,6 +5,7 @@ export interface AtlasConfigDefaults {
   sourceRoot?: string;
   dbPath?: string;
   workspace?: string;
+  model?: string;
 }
 
 function readArgValue(args: string[], name: string): string | undefined {
@@ -30,6 +31,20 @@ function normalizeProvider(value: string | undefined): AtlasProviderName {
   return 'openai';
 }
 
+export function getAtlasDefaultModel(provider: AtlasProviderName): string {
+  switch (provider) {
+    case 'anthropic':
+      return 'claude-haiku-4-5-20251001';
+    case 'gemini':
+      return 'gemini-3.1-flash';
+    case 'ollama':
+      return process.env.ATLAS_OLLAMA_MODEL ?? process.env.OLLAMA_MODEL ?? 'llama3.2';
+    case 'openai':
+    default:
+      return 'gpt-5.4-mini';
+  }
+}
+
 export function loadAtlasConfig(
   argv = process.argv.slice(2),
   defaults: AtlasConfigDefaults = {},
@@ -39,6 +54,7 @@ export function loadAtlasConfig(
   const workspace = readArgValue(argv, '--workspace') ?? readEnv('ATLAS_WORKSPACE') ?? defaults.workspace ?? path.basename(sourceRoot).toLowerCase();
   const dbPath = readArgValue(argv, '--db') ?? readEnv('ATLAS_DB_PATH') ?? defaults.dbPath ?? path.join(cwd, '.atlas', 'atlas.sqlite');
   const provider = normalizeProvider(readArgValue(argv, '--provider') ?? readEnv('ATLAS_PROVIDER'));
+  const model = readArgValue(argv, '--model') ?? readEnv('ATLAS_MODEL') ?? defaults.model ?? '';
   const concurrency = readInt(readArgValue(argv, '--concurrency') ?? readEnv('ATLAS_CONCURRENCY'), 10);
 
   return {
@@ -46,6 +62,7 @@ export function loadAtlasConfig(
     sourceRoot,
     dbPath,
     provider,
+    model,
     openAiApiKey: readEnv('OPENAI_API_KEY') ?? '',
     anthropicApiKey: readEnv('ANTHROPIC_API_KEY') ?? '',
     geminiApiKey: readEnv('GEMINI_API_KEY') ?? '',

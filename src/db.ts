@@ -162,15 +162,24 @@ function stringifyFtsValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function normalizeSearchText(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function ftsDocumentForRecord(record: AtlasFileRecord): Record<string, string> {
   return {
-    file_path: record.file_path,
-    blurb: record.blurb,
-    purpose: record.purpose,
-    public_api: stringifyFtsValue(record.public_api),
-    patterns: stringifyFtsValue(record.patterns),
-    hazards: stringifyFtsValue(record.hazards),
-    cross_refs: stringifyFtsValue(record.cross_refs ?? {}),
+    file_path: normalizeSearchText(record.file_path),
+    blurb: normalizeSearchText(record.blurb),
+    purpose: normalizeSearchText(record.purpose),
+    public_api: normalizeSearchText(stringifyFtsValue(record.public_api)),
+    patterns: normalizeSearchText(stringifyFtsValue(record.patterns)),
+    hazards: normalizeSearchText(stringifyFtsValue(record.hazards)),
+    cross_refs: normalizeSearchText(stringifyFtsValue(record.cross_refs ?? {})),
   };
 }
 

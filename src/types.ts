@@ -120,6 +120,7 @@ export interface AtlasServerConfig {
   sourceRoot: string;
   dbPath: string;
   provider: AtlasProviderName;
+  model: string;
   openAiApiKey: string;
   anthropicApiKey: string;
   geminiApiKey: string;

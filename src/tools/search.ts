@@ -76,6 +76,15 @@ function hasTable(db: AtlasRuntime['db'], tableName: string): boolean {
   }
 }
 
+function normalizeFtsQuery(query: string): string {
+  return query
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function searchFts(db: AtlasRuntime['db'], workspace: string, query: string, limit: number): RankedResult[] {
   if (!hasTable(db, 'atlas_fts')) {
     return [];
@@ -88,7 +97,7 @@ function searchFts(db: AtlasRuntime['db'], workspace: string, query: string, lim
        WHERE atlas_fts MATCH ?
        ORDER BY bm25(atlas_fts)
        LIMIT ?`,
-    ).all(query, limit) as Array<Record<string, unknown>>;
+    ).all(normalizeFtsQuery(query), limit) as Array<Record<string, unknown>>;
 
     return rows.map((row, index) => ({
       file_path: String(row.file_path ?? ''),
