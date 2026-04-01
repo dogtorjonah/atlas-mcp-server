@@ -1,0 +1,30 @@
+{
+  "name": "@voxxo/atlas",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Standalone MCP server for the Voxxo codebase atlas.",
+  "license": "MIT",
+  "main": "dist/server.js",
+  "bin": {
+    "atlas-mcp": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/server.ts",
+    "init": "tsx src/server.ts init",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^11.10.0",
+    "sqlite-vec": "^0.1.6",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.19.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3"
+  }
+}

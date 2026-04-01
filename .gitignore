@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.atlas/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.env
+.env.local
