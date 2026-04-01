@@ -9,7 +9,7 @@
     "atlas-mcp": "./dist/server.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp -r src/pipeline/prompts dist/pipeline/prompts",
     "check": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch src/server.ts",
     "init": "tsx src/server.ts init",
