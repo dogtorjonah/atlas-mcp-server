@@ -143,9 +143,9 @@ function resolveCostProfile(config: AtlasServerConfig): CostProfile {
     return {
       providerLabel: 'anthropic',
       modelLabel: 'claude-haiku-4-5-20251001',
-      inputUsdPerMillion: 0.80,
-      outputUsdPerMillion: 4.00,
-      embedInputUsdPerMillion: 0.80,
+      inputUsdPerMillion: 1.00,
+      outputUsdPerMillion: 5.00,
+      embedInputUsdPerMillion: 1.00,
     };
   }
 
@@ -173,9 +173,9 @@ function resolveCostProfile(config: AtlasServerConfig): CostProfile {
     return {
       providerLabel: 'openai',
       modelLabel: 'gpt-5.4-mini',
-      inputUsdPerMillion: 0.15,
-      outputUsdPerMillion: 0.60,
-      embedInputUsdPerMillion: 0.15,
+      inputUsdPerMillion: 0.75,
+      outputUsdPerMillion: 4.50,
+      embedInputUsdPerMillion: 0.02,
     };
   }
 
