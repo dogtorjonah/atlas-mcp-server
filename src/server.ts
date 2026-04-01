@@ -15,6 +15,7 @@ import { registerFlushTool } from './tools/flush.js';
 import { registerLookupTool } from './tools/lookup.js';
 import { registerReindexTool } from './tools/reindex.js';
 import { registerSearchTool } from './tools/search.js';
+import { registerBridgeTools } from './tools/bridge.js';
 import { ATLAS_CONTEXT_RESOURCE_URI, generateContextResource } from './resources/context.js';
 import type { AtlasRuntime, AtlasServerConfig } from './types.js';
 
@@ -232,6 +233,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   registerLookupTool(server, runtime);
   registerFlushTool(server, runtime);
   registerReindexTool(server, runtime);
+  registerBridgeTools(server, runtime);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

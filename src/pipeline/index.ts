@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { getAtlasFile, listAtlasFiles, openAtlasDatabase, rebuildFts, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
+import { getAtlasFile, getFilePhase, listAtlasFiles, openAtlasDatabase, rebuildFts, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
 import type { AtlasCrossRefs, AtlasFileRecord, AtlasProvider, AtlasServerConfig } from '../types.js';
 import { createOpenAIProvider } from '../providers/openai.js';
 import { createAnthropicProvider } from '../providers/anthropic.js';
@@ -61,6 +61,8 @@ interface BatchPipelineContext {
   atlasRecords: Map<string, AtlasFileRecord>;
   failedFiles: Set<string>;
   cancelled: boolean;
+  /** When true, skip resume logic and re-process all files from scratch */
+  force: boolean;
 }
 
 type BatchPhaseKey = 'pass 0.5' | 'pass 1' | 'embed' | 'pass 2';
@@ -316,6 +318,17 @@ function buildDefaultCrossRefs(file: Pass0FileInfo): AtlasCrossRefs {
   };
 }
 
+/**
+ * Phase ordering for resume comparison.
+ * 'none' < 'pass05' < 'pass1' < 'embed' < 'pass2'
+ */
+const PHASE_ORDER = ['none', 'pass05', 'pass1', 'embed', 'pass2'] as const;
+type PhaseLevel = (typeof PHASE_ORDER)[number];
+
+function phaseAtLeast(current: PhaseLevel, target: PhaseLevel): boolean {
+  return PHASE_ORDER.indexOf(current) >= PHASE_ORDER.indexOf(target);
+}
+
 async function runSequentialPipelineBatch(
   batchName: string,
   files: Pass0FileInfo[],
@@ -326,7 +339,34 @@ async function runSequentialPipelineBatch(
     return { failed: 0, succeeded: 0 };
   }
 
-  const pass05Files = files.filter((file) => !context.failedFiles.has(file.filePath));
+  // Build resume map: check which phase each file has reached
+  const filePhases = new Map<string, PhaseLevel>();
+  let skippedTotal = 0;
+  if (context.force) {
+    console.log(`[atlas-init] ${batchName}: --force supplied, re-processing all ${files.length} files from scratch`);
+    for (const file of files) {
+      filePhases.set(file.filePath, 'none');
+    }
+  } else {
+    for (const file of files) {
+      const phase = getFilePhase(context.db, context.workspace, file.filePath, file.fileHash);
+      filePhases.set(file.filePath, phase);
+      if (phase === 'pass2') skippedTotal++;
+    }
+    if (skippedTotal > 0) {
+      console.log(`[atlas-init] ${batchName}: resuming — ${skippedTotal}/${files.length} files already complete, skipping`);
+    }
+  }
+
+  const pass05Files = files.filter((file) => {
+    if (context.failedFiles.has(file.filePath)) return false;
+    // Skip if this file already completed pass05 or later
+    return !phaseAtLeast(filePhases.get(file.filePath) ?? 'none', 'pass05');
+  });
+  if (pass05Files.length < files.length - context.failedFiles.size) {
+    const skipped = files.length - context.failedFiles.size - pass05Files.length;
+    console.log(`[atlas-init] ${batchName}/blurbs: skipping ${skipped} already-complete files`);
+  }
   await runPhaseBatch('pass 0.5', 'Blurbs', pass05Files, context, async (file) => {
     const atlasFile = getAtlasRecord(context, file.filePath);
     if (!atlasFile) {
@@ -347,7 +387,14 @@ async function runSequentialPipelineBatch(
     refreshAtlasRecord(context, file.filePath);
   });
 
-  const pass1Files = files.filter((file) => !context.failedFiles.has(file.filePath));
+  const pass1Files = files.filter((file) => {
+    if (context.failedFiles.has(file.filePath)) return false;
+    return !phaseAtLeast(filePhases.get(file.filePath) ?? 'none', 'pass1');
+  });
+  if (pass1Files.length < files.length - context.failedFiles.size) {
+    const skipped = files.length - context.failedFiles.size - pass1Files.length;
+    console.log(`[atlas-init] ${batchName}/extraction: skipping ${skipped} already-complete files`);
+  }
   await runPhaseBatch('pass 1', 'Extraction', pass1Files, context, async (file) => {
     const atlasFile = getAtlasRecord(context, file.filePath);
     if (!atlasFile) {
@@ -368,7 +415,16 @@ async function runSequentialPipelineBatch(
     refreshAtlasRecord(context, file.filePath);
   });
 
-  const embedFiles = files.filter((file) => !context.failedFiles.has(file.filePath));
+  const embedFiles = files.filter((file) => {
+    if (context.failedFiles.has(file.filePath)) return false;
+    // Note: embed doesn't have a clean "done" check in the DB, so we only skip
+    // files that reached pass2 (which implies embed was done)
+    return !phaseAtLeast(filePhases.get(file.filePath) ?? 'none', 'pass2');
+  });
+  if (embedFiles.length < files.length - context.failedFiles.size) {
+    const skipped = files.length - context.failedFiles.size - embedFiles.length;
+    console.log(`[atlas-init] ${batchName}/embed: skipping ${skipped} already-complete files`);
+  }
   await runPhaseBatch('embed', 'Vectorize', embedFiles, context, async (file) => {
     const atlasFile = getAtlasRecord(context, file.filePath);
     if (!atlasFile) {
@@ -384,7 +440,14 @@ async function runSequentialPipelineBatch(
     refreshAtlasRecord(context, file.filePath);
   });
 
-  const pass2Files = files.filter((file) => !context.failedFiles.has(file.filePath));
+  const pass2Files = files.filter((file) => {
+    if (context.failedFiles.has(file.filePath)) return false;
+    return !phaseAtLeast(filePhases.get(file.filePath) ?? 'none', 'pass2');
+  });
+  if (pass2Files.length < files.length - context.failedFiles.size) {
+    const skipped = files.length - context.failedFiles.size - pass2Files.length;
+    console.log(`[atlas-init] ${batchName}/cross-refs: skipping ${skipped} already-complete files`);
+  }
   await runPhaseBatch('pass 2', 'Cross-refs', pass2Files, context, async (file) => {
     const atlasFile = getAtlasRecord(context, file.filePath);
     if (!atlasFile) {
@@ -438,6 +501,7 @@ export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise
     atlasRecords,
     failedFiles: new Set<string>(),
     cancelled: false,
+    force: false,
   };
 
   const result = await runSequentialPipelineBatch('reindex', pass0.files, context);
@@ -505,7 +569,7 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
       console.log('[atlas-init] WARNING: no AI provider configured — using scaffold placeholders');
     }
 
-    const pass0 = await runPass0(rootDir, workspace, db);
+    const pass0 = await runPass0(rootDir, workspace, db, { force: config.force });
     console.log(`[atlas-init] pass0: ${pass0.files.length} files, ${pass0.importEdges.length} edges`);
 
     const costProfile = resolveCostProfile(config);
@@ -534,6 +598,7 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
       atlasRecords,
       failedFiles: new Set<string>(),
       cancelled,
+      force: config.force ?? false,
     };
     activeContext = mainContext;
 
@@ -585,6 +650,7 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
           atlasRecords,
           failedFiles: new Set<string>(),
           cancelled,
+          force: false, // rescue pass never forces — it's already targeting incomplete files
         };
         activeContext = rescueContext;
         const rescueResult = await runSequentialPipelineBatch('rescue', incompleteFiles, rescueContext);

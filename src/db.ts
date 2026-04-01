@@ -432,6 +432,136 @@ export function getAtlasFileId(db: AtlasDatabase, workspace: string, filePath: s
   return row?.id ?? null;
 }
 
+/**
+ * Resume-safe Pass 0 upsert: updates ONLY structural fields (hash, cluster, loc,
+ * imports/exports, language) while PRESERVING AI-generated fields (blurb, purpose,
+ * patterns, hazards, conventions, cross_refs, extraction_model, last_extracted).
+ *
+ * For new files, inserts with empty AI fields. For existing files with AI data,
+ * only the structural columns are touched.
+ */
+export function upsertPass0Record(db: AtlasDatabase, record: {
+  workspace: string;
+  file_path: string;
+  file_hash: string | null;
+  cluster: string | null;
+  loc: number;
+  exports: Array<{ name: string; type: string }>;
+  dependencies: Record<string, unknown>;
+  language: string;
+}): void {
+  db.prepare(
+    `INSERT INTO atlas_files (
+       workspace, file_path, file_hash, cluster, loc, blurb, purpose,
+       public_api, exports, patterns, dependencies, data_flows, key_types, hazards,
+       conventions, cross_refs, language, extraction_model, last_extracted, updated_at
+     ) VALUES (
+       @workspace, @file_path, @file_hash, @cluster, @loc, '', '',
+       '[]', @exports, '[]', @dependencies, '[]', '[]', '[]',
+       '[]', 'null', @language, NULL, NULL, CURRENT_TIMESTAMP
+     )
+     ON CONFLICT(workspace, file_path) DO UPDATE SET
+       file_hash = excluded.file_hash,
+       cluster = excluded.cluster,
+       loc = excluded.loc,
+       exports = excluded.exports,
+       dependencies = excluded.dependencies,
+       language = excluded.language,
+       updated_at = CURRENT_TIMESTAMP`,
+  ).run({
+    workspace: record.workspace,
+    file_path: record.file_path,
+    file_hash: record.file_hash ?? null,
+    cluster: record.cluster ?? null,
+    loc: record.loc,
+    exports: JSON.stringify(record.exports),
+    dependencies: JSON.stringify(record.dependencies),
+    language: record.language,
+  });
+
+  const fileId = getAtlasFileId(db, record.workspace, record.file_path);
+  if (fileId != null) {
+    populateFts(db, fileId);
+  }
+}
+
+/**
+ * Check if a file's atlas record is "complete" — has non-empty AI-generated
+ * fields AND the file content hasn't changed since extraction.
+ */
+export function isFileComplete(db: AtlasDatabase, workspace: string, filePath: string, currentHash: string): boolean {
+  const row = db.prepare(
+    `SELECT file_hash, blurb, purpose, extraction_model, cross_refs
+     FROM atlas_files
+     WHERE workspace = ? AND file_path = ? LIMIT 1`,
+  ).get(workspace, filePath) as {
+    file_hash: string | null;
+    blurb: string | null;
+    purpose: string | null;
+    extraction_model: string | null;
+    cross_refs: string | null;
+  } | undefined;
+
+  if (!row) return false;
+  if (row.file_hash !== currentHash) return false;
+  if (!row.blurb || row.blurb.trim() === '') return false;
+  if (!row.purpose || row.purpose.trim() === '') return false;
+  if (!row.extraction_model || row.extraction_model === 'scaffold') return false;
+  if (!row.cross_refs || row.cross_refs === 'null' || row.cross_refs === '{}') return false;
+  return true;
+}
+
+/**
+ * Check which phase a file has reached (for granular resume).
+ * Returns the last completed phase: 'none' | 'pass05' | 'pass1' | 'embed' | 'pass2'
+ *
+ * Phase logic:
+ *   - 'none':   no data, or file hash changed → needs full run
+ *   - 'pass05': has blurb, but no real extraction (purpose empty or scaffold)
+ *   - 'pass1':  has real extraction (purpose + non-scaffold model), but cross_refs
+ *               are missing or have no actual symbol data → needs embed + pass2
+ *   - 'pass2':  cross_refs contain real symbol data → fully complete
+ */
+export function getFilePhase(db: AtlasDatabase, workspace: string, filePath: string, currentHash: string): 'none' | 'pass05' | 'pass1' | 'embed' | 'pass2' {
+  const row = db.prepare(
+    `SELECT file_hash, blurb, purpose, extraction_model, cross_refs
+     FROM atlas_files
+     WHERE workspace = ? AND file_path = ? LIMIT 1`,
+  ).get(workspace, filePath) as {
+    file_hash: string | null;
+    blurb: string | null;
+    purpose: string | null;
+    extraction_model: string | null;
+    cross_refs: string | null;
+  } | undefined;
+
+  if (!row) return 'none';
+  // If hash changed, file needs full re-processing
+  if (row.file_hash !== currentHash) return 'none';
+  if (!row.blurb || row.blurb.trim() === '') return 'none';
+  if (!row.purpose || row.purpose.trim() === '' || row.extraction_model === 'scaffold') return 'pass05';
+
+  // Has real extraction — at least pass1 complete.
+  // Check cross_refs for actual symbol data (not just empty '{}' or 'null').
+  if (row.cross_refs && row.cross_refs !== 'null' && row.cross_refs !== '{}') {
+    try {
+      const parsed = JSON.parse(row.cross_refs);
+      // A real cross_refs has a 'symbols' object with at least one key,
+      // OR has total_exports_analyzed > 0 (meaning pass2 ran, even if no symbols found)
+      if (parsed && typeof parsed === 'object' && (
+        (parsed.symbols && Object.keys(parsed.symbols).length > 0) ||
+        (typeof parsed.total_exports_analyzed === 'number' && parsed.total_exports_analyzed >= 0 && parsed.pass2_timestamp)
+      )) {
+        return 'pass2';
+      }
+    } catch {
+      // Invalid JSON — treat as incomplete
+    }
+  }
+
+  return 'pass1';
+}
+
 export function upsertEmbedding(
   db: AtlasDatabase,
   workspace: string,
