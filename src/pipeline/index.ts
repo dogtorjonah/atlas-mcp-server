@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { getAtlasFile, openAtlasDatabase, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
+import { getAtlasFile, listAtlasFiles, openAtlasDatabase, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
 import type { AtlasProvider, AtlasServerConfig } from '../types.js';
 import { createOpenAIProvider } from '../providers/openai.js';
 import { createAnthropicProvider } from '../providers/anthropic.js';
@@ -26,6 +26,8 @@ export interface FullPipelineResult {
   filesProcessed: number;
   filesFailed: number;
 }
+
+const CONCURRENCY = 10;
 
 function pseudoEmbedding(text: string): number[] {
   const size = 1536;
@@ -98,6 +100,17 @@ function createProgressReporter(totalFiles: number) {
   };
 }
 
+async function runBatch<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  for (let i = 0; i < items.length; i += concurrency) {
+    const chunk = items.slice(i, i + concurrency);
+    await Promise.allSettled(chunk.map(fn));
+  }
+}
+
 export async function runFullPipeline(projectDir: string, config: AtlasPipelineConfig): Promise<FullPipelineResult> {
   const db = openAtlasDatabase({
     dbPath: config.dbPath,
@@ -133,12 +146,26 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
     console.log(`[atlas-init] pass0: ${pass0.files.length} files, ${pass0.importEdges.length} edges`);
     const progress = createProgressReporter(pass0.files.length);
 
-    let filesFailed = 0;
-    for (const file of pass0.files) {
-      let status: 'ok' | 'failed' = 'ok';
+    const atlasRecords = new Map(listAtlasFiles(db, workspace).map((record) => [record.file_path, record]));
+    const blurbs: Record<string, string> = {};
+    const extractions: Record<string, Awaited<ReturnType<typeof runPass1>>['files'][string]> = {};
+    const crossRefsByFile: Record<string, Awaited<ReturnType<typeof runPass2>>[string]> = {};
+    const failedFiles = new Set<string>();
+
+    const markFailure = (filePath: string, error: unknown): void => {
+      if (failedFiles.has(filePath)) return;
+      failedFiles.add(filePath);
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[atlas-init] failed ${filePath}: ${message}`);
+      progress.markFile(filePath, 'failed');
+    };
+
+    console.log(`[atlas-init] pass 0.5: batching ${pass0.files.length} files at concurrency ${CONCURRENCY}`);
+    await runBatch(pass0.files, CONCURRENCY, async (file) => {
+      if (failedFiles.has(file.filePath)) return;
       try {
         progress.setStage('pass 0.5', file.filePath);
-        const atlasFile = getAtlasFile(db, workspace, file.filePath);
+        const atlasFile = atlasRecords.get(file.filePath) ?? getAtlasFile(db, workspace, file.filePath);
         if (!atlasFile) {
           throw new Error(`Pass 0 inserted no atlas record for ${file.filePath}`);
         }
@@ -150,30 +177,58 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
           provider,
           files: [atlasFile],
         });
-        const blurb = pass05.blurbs[file.filePath] ?? '';
+        blurbs[file.filePath] = pass05.blurbs[file.filePath] ?? '';
+      } catch (error) {
+        markFailure(file.filePath, error);
+      }
+    });
 
+    const pass1Files = pass0.files.filter((file) => !failedFiles.has(file.filePath));
+    console.log(`[atlas-init] pass 1: batching ${pass1Files.length} files at concurrency ${CONCURRENCY}`);
+
+    await runBatch(pass1Files, CONCURRENCY, async (file) => {
+      if (failedFiles.has(file.filePath)) return;
+      try {
         progress.setStage('pass 1', file.filePath);
+        const atlasFile = atlasRecords.get(file.filePath) ?? getAtlasFile(db, workspace, file.filePath);
+        if (!atlasFile) {
+          throw new Error(`Pass 0 inserted no atlas record for ${file.filePath}`);
+        }
+
+        const enrichedRecord = {
+          ...atlasFile,
+          blurb: blurbs[file.filePath] ?? atlasFile.blurb,
+        };
+
         const pass1 = await runPass1({
           db,
           sourceRoot: rootDir,
           workspace,
           provider,
-          files: [atlasFile],
+          files: [enrichedRecord],
         });
         const extraction = pass1.files[file.filePath];
-
         if (!extraction) {
           throw new Error(`Pass 1 returned no extraction for ${file.filePath}`);
         }
+        extractions[file.filePath] = extraction;
+      } catch (error) {
+        markFailure(file.filePath, error);
+      }
+    });
 
-        progress.setStage('pass 2', file.filePath);
-        const pass2 = await runPass2([file], { sourceRoot: rootDir });
-        const crossRefs = pass2[file.filePath] ?? {
-          symbols: {},
-          total_exports_analyzed: file.exports.length,
-          total_cross_references: 0,
-        };
+    const embedFiles = pass1Files.filter((file) => !failedFiles.has(file.filePath) && extractions[file.filePath]);
+    console.log(`[atlas-init] embed: batching ${embedFiles.length} files at concurrency ${CONCURRENCY}`);
 
+    await runBatch(embedFiles, CONCURRENCY, async (file) => {
+      if (failedFiles.has(file.filePath)) return;
+      try {
+        progress.setStage('embed', file.filePath);
+        const extraction = extractions[file.filePath];
+        if (!extraction) {
+          throw new Error(`No extraction available for ${file.filePath}`);
+        }
+        const blurb = blurbs[file.filePath] ?? '';
         const embeddingText = buildEmbeddingText(
           file,
           blurb,
@@ -181,14 +236,48 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
           extraction.patterns,
           extraction.hazards,
         );
+        upsertEmbedding(db, workspace, file.filePath, pseudoEmbedding(embeddingText));
+      } catch (error) {
+        markFailure(file.filePath, error);
+      }
+    });
 
+    const pass2Files = embedFiles.filter((file) => !failedFiles.has(file.filePath));
+    console.log(`[atlas-init] pass 2: batching ${pass2Files.length} files at concurrency ${CONCURRENCY}`);
+
+    await runBatch(pass2Files, CONCURRENCY, async (file) => {
+      if (failedFiles.has(file.filePath)) return;
+      try {
+        progress.setStage('pass 2', file.filePath);
+        const pass2 = await runPass2([file], { sourceRoot: rootDir });
+        const crossRefs = pass2[file.filePath] ?? {
+          symbols: {},
+          total_exports_analyzed: file.exports.length,
+          total_cross_references: 0,
+        };
+        crossRefsByFile[file.filePath] = crossRefs;
+      } catch (error) {
+        markFailure(file.filePath, error);
+      }
+    });
+
+    const finalizeFiles = pass2Files.filter((file) => !failedFiles.has(file.filePath) && crossRefsByFile[file.filePath]);
+    console.log(`[atlas-init] finalize: batching ${finalizeFiles.length} files at concurrency ${CONCURRENCY}`);
+
+    await runBatch(finalizeFiles, CONCURRENCY, async (file) => {
+      if (failedFiles.has(file.filePath)) return;
+      try {
+        const atlasFile = atlasRecords.get(file.filePath) ?? getAtlasFile(db, workspace, file.filePath);
+        const extraction = extractions[file.filePath];
+        const crossRefs = crossRefsByFile[file.filePath];
+        if (!atlasFile || !extraction || !crossRefs) {
+          throw new Error(`Missing final atlas data for ${file.filePath}`);
+        }
+
+        progress.setStage('finalize', file.filePath);
         upsertFileRecord(db, {
-          workspace,
-          file_path: file.filePath,
-          file_hash: file.fileHash,
-          cluster: file.cluster,
-          loc: file.loc,
-          blurb,
+          ...atlasFile,
+          blurb: blurbs[file.filePath] ?? atlasFile.blurb,
           purpose: extraction.purpose,
           public_api: extraction.public_api,
           exports: file.exports,
@@ -199,29 +288,21 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
           hazards: extraction.hazards,
           conventions: extraction.conventions,
           cross_refs: crossRefs,
-          language: file.filePath.endsWith('.tsx') ? 'tsx' : 'typescript',
-          extraction_model: 'scaffold',
+          extraction_model: provider?.kind ?? 'scaffold',
           last_extracted: new Date().toISOString(),
         });
-
-        upsertEmbedding(db, workspace, file.filePath, pseudoEmbedding(embeddingText));
-        console.log(`[atlas-init] processed ${file.filePath}`);
+        progress.markFile(file.filePath, 'ok');
       } catch (error) {
-        status = 'failed';
-        filesFailed += 1;
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[atlas-init] failed ${file.filePath}: ${message}`);
-      } finally {
-        progress.markFile(file.filePath, status);
+        markFailure(file.filePath, error);
       }
-    }
+    });
 
-    progress.finish(`${pass0.files.length - filesFailed} succeeded, ${filesFailed} failed`);
+    progress.finish(`${pass0.files.length - failedFiles.size} succeeded, ${failedFiles.size} failed`);
     return {
       workspace,
       rootDir,
       filesProcessed: pass0.files.length,
-      filesFailed,
+      filesFailed: failedFiles.size,
     };
   } finally {
     db.close();

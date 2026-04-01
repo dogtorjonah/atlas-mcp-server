@@ -37,6 +37,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   });
 
   if (isInit) {
+    console.log('[atlas-init] starting init pipeline');
     await runFullPipeline(targetRoot, {
       ...config,
       sourceRoot: targetRoot,
