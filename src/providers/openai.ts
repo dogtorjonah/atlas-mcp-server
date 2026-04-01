@@ -6,7 +6,7 @@ import type {
   AtlasServerConfig,
 } from '../types.js';
 
-const OPENAI_CHAT_MODEL = 'gpt-4.1-mini';
+const OPENAI_CHAT_MODEL = 'gpt-5.4-mini';
 const OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
 

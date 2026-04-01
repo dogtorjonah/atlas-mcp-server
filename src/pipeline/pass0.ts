@@ -27,7 +27,11 @@ export interface Pass0Result {
   importEdges: AtlasImportEdgeRecord[];
 }
 
-const EXCLUDE_DIRS = new Set(['node_modules', 'dist', '.git']);
+const EXCLUDE_DIRS = new Set([
+  'node_modules', 'dist', '.git', '.next', '__tests__', 'tests', 'test',
+  '.atlas', '.turbo', '.cache', 'coverage', 'build', 'out', '.vercel',
+  '.svelte-kit', '.nuxt', '.output',
+]);
 
 function assignCluster(relativePath: string): string {
   if (relativePath.startsWith('src/pipeline/')) {
