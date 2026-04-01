@@ -97,17 +97,45 @@ function resolveSqliteVecPath(explicit?: string): string | null {
   return null;
 }
 
-function loadSqliteVec(db: AtlasDatabase, extensionPath?: string): void {
+function loadSqliteVec(db: AtlasDatabase, extensionPath?: string): boolean {
   const vecPath = resolveSqliteVecPath(extensionPath);
   if (!vecPath) {
     console.warn('[atlas] sqlite-vec extension not found — vector search will be unavailable');
-    return;
+    return false;
   }
 
   try {
     db.loadExtension(vecPath);
+    return true;
   } catch (err) {
     console.warn(`[atlas] Failed to load sqlite-vec from ${vecPath}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Verify the atlas_embeddings vec0 table is functional.
+ * If it was created without the extension loaded it will exist as a broken
+ * shell that silently rejects writes. Drop and recreate it in that case.
+ */
+function healVec0Table(db: AtlasDatabase): void {
+  try {
+    // Probe with a real insert + immediate delete.
+    // vec0 v0.1.x requires integer primary keys as SQL literals, not bound params.
+    db.prepare(
+      'INSERT INTO atlas_embeddings (file_id, embedding) VALUES (-1, ?)',
+    ).run(JSON.stringify(new Array(1536).fill(0)));
+    db.prepare('DELETE FROM atlas_embeddings WHERE file_id = -1').run();
+  } catch {
+    // Probe failed — table is broken. Recreate it.
+    console.warn('[atlas] atlas_embeddings vec0 table is non-functional — recreating');
+    try {
+      db.exec('DROP TABLE IF EXISTS atlas_embeddings');
+      db.exec('CREATE VIRTUAL TABLE atlas_embeddings USING vec0(file_id INTEGER PRIMARY KEY, embedding float[1536])');
+      console.log('[atlas] atlas_embeddings vec0 table recreated successfully');
+    } catch (err) {
+      console.warn(`[atlas] Failed to recreate vec0 table: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 
@@ -117,7 +145,7 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
   const db = new Database(options.dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
-  loadSqliteVec(db, options.sqliteVecExtension);
+  const vecLoaded = loadSqliteVec(db, options.sqliteVecExtension);
 
   for (const migrationPath of readMigrationFiles(options.migrationDir)) {
     const sql = fs.readFileSync(migrationPath, 'utf8');
@@ -137,7 +165,38 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
     }
   }
 
+  // If the extension loaded, verify the vec0 table is functional and heal if needed
+  if (vecLoaded) {
+    healVec0Table(db);
+  }
+
   return db;
+}
+
+export function deleteAtlasDatabaseFiles(dbPath: string): void {
+  const sidecars = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`];
+  for (const filePath of sidecars) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw err;
+      }
+    }
+  }
+}
+
+export function resetAtlasDatabase(options: AtlasDbOptions, currentDb?: AtlasDatabase): AtlasDatabase {
+  if (currentDb) {
+    try {
+      currentDb.close();
+    } catch {
+      // Ignore close errors during reset; the file delete below is the source of truth.
+    }
+  }
+
+  deleteAtlasDatabaseFiles(options.dbPath);
+  return openAtlasDatabase(options);
 }
 
 function parseJson<T>(value: unknown, fallback: T): T {
@@ -529,12 +588,25 @@ export function isFileComplete(db: AtlasDatabase, workspace: string, filePath: s
  *               are missing or have no actual symbol data → needs embed + pass2
  *   - 'pass2':  cross_refs contain real symbol data → fully complete
  */
+function hasEmbedding(db: AtlasDatabase, fileId: number): boolean {
+  try {
+    const row = db.prepare(
+      'SELECT 1 FROM atlas_embeddings_rowids WHERE id = ? LIMIT 1',
+    ).get(fileId) as Record<string, unknown> | undefined;
+    return row !== undefined;
+  } catch {
+    // vec0 backing table may not exist
+    return false;
+  }
+}
+
 export function getFilePhase(db: AtlasDatabase, workspace: string, filePath: string, currentHash: string): 'none' | 'pass05' | 'pass1' | 'embed' | 'pass2' {
   const row = db.prepare(
-    `SELECT file_hash, blurb, purpose, extraction_model, cross_refs
+    `SELECT id, file_hash, blurb, purpose, extraction_model, cross_refs
      FROM atlas_files
      WHERE workspace = ? AND file_path = ? LIMIT 1`,
   ).get(workspace, filePath) as {
+    id: number;
     file_hash: string | null;
     blurb: string | null;
     purpose: string | null;
@@ -550,15 +622,22 @@ export function getFilePhase(db: AtlasDatabase, workspace: string, filePath: str
 
   // Has real extraction — at least pass1 complete.
   // Check cross_refs for actual symbol data (not just empty '{}' or 'null').
-  if (row.cross_refs && row.cross_refs !== 'null' && row.cross_refs !== '{}') {
+  const crossRefs = row.cross_refs;
+  if (crossRefs && crossRefs !== 'null' && crossRefs !== '{}') {
     try {
-      const parsed = JSON.parse(row.cross_refs);
+      const parsed = JSON.parse(crossRefs);
       // A real cross_refs has a 'symbols' object with at least one key,
       // OR has total_exports_analyzed > 0 (meaning pass2 ran, even if no symbols found)
       if (parsed && typeof parsed === 'object' && (
         (parsed.symbols && Object.keys(parsed.symbols).length > 0) ||
         (typeof parsed.total_exports_analyzed === 'number' && parsed.total_exports_analyzed >= 0 && parsed.pass2_timestamp)
       )) {
+        // Cross-refs exist, but verify embedding also exists.
+        // Embed can silently fail (e.g. broken vec0 table) while pass2 succeeds,
+        // leaving the file stuck without an embedding forever.
+        if (!hasEmbedding(db, row.id)) {
+          return 'pass1'; // re-run from embed onwards
+        }
         return 'pass2';
       }
     } catch {
@@ -581,11 +660,17 @@ export function upsertEmbedding(
   }
 
   try {
+    // vec0 virtual tables do not support ON CONFLICT / UPSERT,
+    // so we delete-then-insert to achieve upsert semantics.
+    // IMPORTANT: vec0 v0.1.x cannot handle bound params for the primary key column —
+    // the integer must be a SQL literal.  Only the embedding vector is bound.
+    db.prepare(`DELETE FROM atlas_embeddings WHERE file_id = ${fileId}`).run();
     db.prepare(
-      'INSERT INTO atlas_embeddings (file_id, embedding) VALUES (?, ?) ON CONFLICT(file_id) DO UPDATE SET embedding = excluded.embedding',
-    ).run(fileId, JSON.stringify(embedding));
-  } catch {
+      `INSERT INTO atlas_embeddings (file_id, embedding) VALUES (${fileId}, ?)`,
+    ).run(JSON.stringify(embedding));
+  } catch (err) {
     // vec0 table may not exist if sqlite-vec extension isn't loaded
+    console.warn(`[atlas] embedding write failed for file_id=${fileId}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

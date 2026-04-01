@@ -1,7 +1,8 @@
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
-import { enqueueReextract, listAtlasFiles } from '../db.js';
+import { enqueueReextract, listAtlasFiles, resetAtlasDatabase } from '../db.js';
 import { notifyAtlasContextUpdated } from '../resources/context.js';
 import { estimateInitCost, formatUsd, resolveCostProfile, runRuntimeReindex } from '../pipeline/index.js';
 
@@ -78,7 +79,7 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
               `atlas_reindex dry-run: ${fileCount} files (~${estimate.totalCalls} API calls)`,
               `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
               `Estimated cost: ~${formatUsd(estimate.estimatedUsd)}`,
-              `Mode: ${force ? 'FORCE (re-extract all files, overwrite in-place)' : 'resume-safe (skip completed files)'}`,
+              `Mode: ${force ? 'FORCE (delete existing SQLite database and rebuild from scratch)' : 'resume-safe (skip completed files)'}`,
               ``,
               `Call atlas_reindex with confirm=true to proceed.`,
               `Pass files=["path/to/file.ts"] to re-extract specific files instead.`,
@@ -97,6 +98,15 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
       const modeLabel = force ? 'force rebuild' : 'resume-safe';
       reindexStartedAt.set(activeWorkspace, new Date());
       reindexFileCount.set(activeWorkspace, fileCount);
+
+      if (force) {
+        runtime.db = resetAtlasDatabase({
+          dbPath: runtime.config.dbPath,
+          migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
+          sqliteVecExtension: runtime.config.sqliteVecExtension,
+        }, runtime.db);
+      }
+
       activeReindexes.set(activeWorkspace, runRuntimeReindex({
         db: runtime.db,
         workspace: activeWorkspace,

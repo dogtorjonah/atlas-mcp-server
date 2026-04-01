@@ -243,7 +243,7 @@ export function createAnthropicProvider(config: AtlasServerConfig): AtlasProvide
         content?: Array<{ type?: string; input?: unknown }>;
       }>(apiKey, '/messages', {
         model: ANTHROPIC_MODEL,
-        max_tokens: 2048,
+        max_tokens: 8192,
         temperature: 0,
         system: 'You are a senior TypeScript architect performing deep code analysis. Use the provided tool exactly once.',
         messages: [
@@ -343,7 +343,7 @@ export function createAnthropicProvider(config: AtlasServerConfig): AtlasProvide
         content?: Array<{ type?: string; input?: unknown }>;
       }>(apiKey, '/messages', {
         model: ANTHROPIC_MODEL,
-        max_tokens: 2048,
+        max_tokens: 4096,
         temperature: 0,
         system: 'You are a senior TypeScript architect analyzing cross-file symbol usage. You will receive a file\'s exported symbols with tiered caller context. Use the provided tool exactly once to return cross-reference data for all symbols.',
         messages: [

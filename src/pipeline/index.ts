@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { writeFileSync, unlinkSync } from 'node:fs';
-import { getAtlasFile, getFilePhase, listAtlasFiles, openAtlasDatabase, rebuildFts, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
+import { getAtlasFile, getFilePhase, listAtlasFiles, openAtlasDatabase, rebuildFts, resetAtlasDatabase, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
 import type { AtlasCrossRefs, AtlasFileRecord, AtlasProvider, AtlasServerConfig } from '../types.js';
 import { createOpenAIProvider } from '../providers/openai.js';
 import { createAnthropicProvider } from '../providers/anthropic.js';
@@ -215,9 +215,36 @@ function refreshAtlasRecord(context: BatchPipelineContext, filePath: string): At
   return refreshed;
 }
 
-function isRetryableJsonParseError(error: unknown): boolean {
+/** Errors where truncating the source text and retrying may help. */
+function isRetryableWithTruncation(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return message.includes('Unexpected end of JSON input');
+  return (
+    // Malformed / truncated JSON from the model
+    message.includes('Unexpected end of JSON input') ||
+    message.includes('Unexpected token') ||
+    message.includes('JSON') ||
+    // Context window / token limit overflow
+    message.includes('context_length_exceeded') ||
+    message.includes('max_tokens') ||
+    message.includes('maximum context length') ||
+    message.includes('too many tokens') ||
+    message.includes('string_above_max_length')
+  );
+}
+
+/** Transient errors worth retrying at the same size (rate limits, network). */
+function isTransientError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const statusMatch = message.match(/\b(429|500|502|503|504)\b/);
+  return (
+    statusMatch !== null ||
+    message.includes('rate_limit') ||
+    message.includes('Rate limit') ||
+    message.includes('ECONNRESET') ||
+    message.includes('ETIMEDOUT') ||
+    message.includes('fetch failed') ||
+    message.includes('network')
+  );
 }
 
 function formatDuration(ms: number): string {
@@ -288,24 +315,46 @@ async function runPhaseBatch(
   return { failed: failed.size, succeeded };
 }
 
+const TRANSIENT_MAX_RETRIES = 2;
+const TRANSIENT_BASE_DELAY_MS = 3000;
+
 async function runRetriableProviderTask(
   filePath: string,
   task: (sourceTextLimit?: number) => Promise<void>,
 ): Promise<void> {
   let lastError: unknown;
   const sourceTextLimits = [undefined, ...RESCUE_TRUNCATION_LIMITS] as const;
+
   for (let index = 0; index < sourceTextLimits.length; index += 1) {
     const sourceTextLimit = sourceTextLimits[index];
-    try {
-      await task(sourceTextLimit);
-      return;
-    } catch (error) {
-      lastError = error;
-      const nextSourceTextLimit = sourceTextLimits[index + 1];
-      if (!isRetryableJsonParseError(error) || nextSourceTextLimit === undefined) {
+
+    // Each truncation level gets its own transient-retry budget
+    for (let transientAttempt = 0; transientAttempt <= TRANSIENT_MAX_RETRIES; transientAttempt += 1) {
+      try {
+        await task(sourceTextLimit);
+        return;
+      } catch (error) {
+        lastError = error;
+        const msg = error instanceof Error ? error.message : String(error);
+
+        // Transient error (rate limit, network) — retry same size after backoff
+        if (transientAttempt < TRANSIENT_MAX_RETRIES && isTransientError(error)) {
+          const delay = TRANSIENT_BASE_DELAY_MS * (transientAttempt + 1);
+          console.log(`[atlas-init] ${filePath}: transient error (${msg.slice(0, 80)}), retrying in ${delay}ms`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+
+        // Truncation-retryable error — try with smaller source text
+        const nextSourceTextLimit = sourceTextLimits[index + 1];
+        if (isRetryableWithTruncation(error) && nextSourceTextLimit !== undefined) {
+          console.log(`[atlas-init] ${filePath}: ${msg.slice(0, 80)} — retrying with source text limit ${nextSourceTextLimit}`);
+          break; // break inner loop, continue outer with next truncation level
+        }
+
+        // Non-retryable — give up
         throw error;
       }
-      console.log(`[atlas-init] ${filePath}: retrying with source text limit ${nextSourceTextLimit}`);
     }
   }
 
@@ -564,11 +613,20 @@ export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise
 }
 
 export async function runFullPipeline(projectDir: string, config: AtlasPipelineConfig): Promise<FullPipelineResult> {
-  const db = openAtlasDatabase({
+  let db = openAtlasDatabase({
     dbPath: config.dbPath,
     migrationDir: config.migrationDir,
     sqliteVecExtension: config.sqliteVecExtension,
   });
+
+  if (config.force) {
+    console.log('[atlas-init] --force supplied; deleting existing database and rebuilding from scratch');
+    db = resetAtlasDatabase({
+      dbPath: config.dbPath,
+      migrationDir: config.migrationDir,
+      sqliteVecExtension: config.sqliteVecExtension,
+    }, db);
+  }
 
   const workspace = config.workspace || path.basename(projectDir).toLowerCase();
   const rootDir = path.resolve(projectDir);

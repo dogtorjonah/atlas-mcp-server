@@ -34,24 +34,55 @@ const EXCLUDE_DIRS = new Set([
   '.svelte-kit', '.nuxt', '.output',
 ]);
 
+// Category prefixes for common src/ directory conventions.
+// Only affects display names — no files are excluded.
+const CATEGORY_PREFIXES: Record<string, string> = {
+  components: 'ui',
+  stores: 'store',
+};
+
 function assignCluster(relativePath: string): string {
-  if (relativePath.startsWith('src/pipeline/')) {
-    return 'pipeline';
+  const parts = relativePath.split('/');
+
+  // Non-src top-level directories → misc-{dir}
+  if (parts[0] !== 'src') {
+    return parts[0] ? `misc-${parts[0]}` : 'root';
   }
-  if (relativePath.startsWith('src/providers/')) {
-    return 'providers';
-  }
-  if (relativePath.startsWith('src/tools/')) {
-    return 'tools';
-  }
-  if (relativePath.startsWith('src/routes/')) {
-    return 'routes';
-  }
-  if (relativePath.startsWith('src/')) {
+
+  // File directly in src/ (e.g. src/utils.ts) → core
+  if (parts.length <= 2) {
     return 'core';
   }
-  const parts = relativePath.split('/');
-  return parts[0] ? `misc-${parts[0]}` : 'core';
+
+  const category = parts[1] ?? ''; // components, lib, stores, app, hooks, services, types, ...
+  const domain = parts[2] ?? '';   // audio, jobs, records, hospitalBoard, api, ...
+
+  // src/app/api/{domain}/... → api-{domain}
+  const apiDomain = parts[3];
+  if (category === 'app' && domain === 'api' && apiDomain) {
+    return `api-${apiDomain}`;
+  }
+
+  // src/app/{page}/... → page-{page}  (non-api app routes)
+  if (category === 'app') {
+    return domain ? `page-${domain}` : 'page';
+  }
+
+  // Resolve display prefix: components→ui, stores→store, else keep raw name
+  const prefix = (category && CATEGORY_PREFIXES[category]) ?? category;
+
+  // Leaf categories with no meaningful subdomain (hooks, services, types)
+  // src/hooks/useFoo.ts → hooks
+  if (!domain || parts.length === 3) {
+    // If there's a domain subfolder, include it; otherwise just the prefix
+    return domain ? `${prefix}-${domain}` : prefix;
+  }
+
+  // Standard two-level cluster: prefix-domain
+  // src/components/audio/... → ui-audio
+  // src/stores/nativeRecording/... → store-nativeRecording
+  // src/lib/jobs/... → lib-jobs
+  return `${prefix}-${domain}`;
 }
 
 async function discoverFiles(dir: string, files: string[] = []): Promise<string[]> {

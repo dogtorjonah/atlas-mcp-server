@@ -170,7 +170,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const initConfig = initArgs?.useWizard ? await promptInitWizard(config) : config;
     targetRoot = initConfig.sourceRoot;
     if (initArgs?.force) {
-      console.log('[atlas-init] --force supplied; bypassing resume checks when supported');
+      console.log('[atlas-init] --force supplied; database will be deleted and rebuilt from scratch');
     }
     writeAtlasEnvFile(path.join(targetRoot, '.atlas', '.env'), {
       ATLAS_PROVIDER: initConfig.provider,
