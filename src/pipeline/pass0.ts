@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AtlasDatabase, AtlasImportEdgeRecord } from '../db.js';
-import { replaceImportEdges, upsertFileRecord, upsertPass0Record } from '../db.js';
+import { replaceImportEdges, upsertPass0Record } from '../db.js';
 import { createPhaseProgressReporter } from './progress.js';
 
 export interface Pass0ExportEntry {
@@ -182,7 +182,6 @@ export async function runPass0(
   sourceRoot: string,
   workspace: string,
   db: AtlasDatabase,
-  options?: { force?: boolean },
 ): Promise<Pass0Result> {
   const absoluteRoot = path.resolve(sourceRoot);
   const sourceFiles = await discoverFiles(absoluteRoot);
@@ -232,42 +231,19 @@ export async function runPass0(
     };
     files.push(fileInfo);
 
-    if (options?.force) {
-      // --force: wipe everything and start fresh
-      upsertFileRecord(db, {
-        workspace,
-        file_path: relativePath,
-        file_hash: fileHash,
-        cluster,
-        loc,
-        public_api: [],
-        exports,
-        patterns: [],
-        dependencies: { imports: resolvedImports, imported_by: [] },
-        data_flows: [],
-        key_types: [],
-        hazards: [],
-        conventions: [],
-        language: relativePath.endsWith('.tsx') ? 'tsx' : 'typescript',
-        blurb: '',
-        purpose: '',
-        extraction_model: null,
-        last_extracted: null,
-        cross_refs: null,
-      });
-    } else {
-      // Resume-safe: only update structural fields, preserve any existing AI data
-      upsertPass0Record(db, {
-        workspace,
-        file_path: relativePath,
-        file_hash: fileHash,
-        cluster,
-        loc,
-        exports,
-        dependencies: { imports: resolvedImports, imported_by: [] },
-        language: relativePath.endsWith('.tsx') ? 'tsx' : 'typescript',
-      });
-    }
+    // Always resume-safe: only update structural fields, preserve existing AI data.
+    // Even with --force, we keep the old data intact until new extractions overwrite it.
+    // This means a crash during --force never leaves orphaned empty records.
+    upsertPass0Record(db, {
+      workspace,
+      file_path: relativePath,
+      file_hash: fileHash,
+      cluster,
+      loc,
+      exports,
+      dependencies: { imports: resolvedImports, imported_by: [] },
+      language: relativePath.endsWith('.tsx') ? 'tsx' : 'typescript',
+    });
 
     progress.complete('pass 0');
   }

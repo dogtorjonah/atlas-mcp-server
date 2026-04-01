@@ -569,7 +569,7 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
       console.log('[atlas-init] WARNING: no AI provider configured — using scaffold placeholders');
     }
 
-    const pass0 = await runPass0(rootDir, workspace, db, { force: config.force });
+    const pass0 = await runPass0(rootDir, workspace, db);
     console.log(`[atlas-init] pass0: ${pass0.files.length} files, ${pass0.importEdges.length} edges`);
 
     const costProfile = resolveCostProfile(config);
