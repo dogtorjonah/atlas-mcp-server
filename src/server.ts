@@ -10,6 +10,7 @@ import { createGeminiProvider } from './providers/gemini.js';
 import { createOpenAIProvider } from './providers/openai.js';
 import { createOllamaProvider } from './providers/ollama.js';
 import { runFullPipeline } from './pipeline/index.js';
+import { startAtlasWatcher } from './watcher.js';
 import { registerFlushTool } from './tools/flush.js';
 import { registerLookupTool } from './tools/lookup.js';
 import { registerReindexTool } from './tools/reindex.js';
@@ -221,9 +222,19 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  process.stdin.on('close', () => {
-    db.close();
-  });
+  const stopWatcher = startAtlasWatcher(runtime);
+  const shutdown = (): void => {
+    stopWatcher();
+    try {
+      db.close();
+    } catch {
+      // ignore close-on-shutdown races
+    }
+  };
+
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+  process.stdin.once('close', shutdown);
 }
 
 const entrypoint = process.argv[1];
