@@ -7,7 +7,7 @@ import type {
 } from '../types.js';
 
 const ANTHROPIC_API_BASE = 'https://api.anthropic.com/v1';
-const ANTHROPIC_MODEL = 'claude-3-5-haiku-20241022';
+const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001';
 const VOYAGE_MODEL = 'voyage-3-small';
 const OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
 
