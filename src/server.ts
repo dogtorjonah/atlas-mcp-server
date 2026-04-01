@@ -74,6 +74,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       ...config,
       sourceRoot: targetRoot,
       dbPath: config.dbPath,
+      concurrency: config.concurrency,
       migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
       skipCostConfirmation: initArgs?.skipCostConfirmation ?? false,
     });

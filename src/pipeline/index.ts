@@ -31,7 +31,6 @@ export interface FullPipelineResult {
   filesFailed: number;
 }
 
-const CONCURRENCY = 10;
 const CHAT_INPUT_TOKENS_PER_CALL = 2000;
 const CHAT_OUTPUT_TOKENS_PER_CALL = 500;
 const EMBED_INPUT_TOKENS_PER_CALL = 2000;
@@ -160,6 +159,16 @@ function resolveCostProfile(config: AtlasServerConfig): CostProfile {
     };
   }
 
+  if (config.provider === 'gemini' && config.geminiApiKey) {
+    return {
+      providerLabel: 'gemini',
+      modelLabel: 'gemini-3.1-flash',
+      inputUsdPerMillion: 0.10,
+      outputUsdPerMillion: 0.40,
+      embedInputUsdPerMillion: 0.10,
+    };
+  }
+
   if (config.openAiApiKey) {
     return {
       providerLabel: 'openai',
@@ -243,6 +252,7 @@ interface BatchPipelineContext {
   db: ReturnType<typeof openAtlasDatabase>;
   workspace: string;
   rootDir: string;
+  concurrency: number;
   provider?: AtlasProvider;
   atlasRecords: Map<string, AtlasFileRecord>;
   failedFiles: Set<string>;
@@ -276,8 +286,8 @@ async function runBatchedPasses(
     }
   };
 
-  console.log(`[atlas-init] ${batchName} pass 0.5: batching ${files.length} files at concurrency ${CONCURRENCY}`);
-  await runBatch(files, CONCURRENCY, async (file) => {
+  console.log(`[atlas-init] ${batchName} pass 0.5: batching ${files.length} files at concurrency ${context.concurrency}`);
+  await runBatch(files, context.concurrency, async (file) => {
     if (batchFailed.has(file.filePath)) return;
     try {
       progress.setStage(`${batchName} pass 0.5`, file.filePath);
@@ -419,6 +429,7 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
         db,
         workspace,
         rootDir,
+        concurrency: config.concurrency,
         provider,
         atlasRecords,
         failedFiles,
@@ -452,6 +463,7 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
           db,
           workspace,
           rootDir,
+          concurrency: config.concurrency,
           provider,
           atlasRecords,
           failedFiles,

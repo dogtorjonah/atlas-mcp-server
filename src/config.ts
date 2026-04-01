@@ -17,6 +17,12 @@ function readEnv(name: string): string | undefined {
   return value && value.trim() !== '' ? value.trim() : undefined;
 }
 
+function readInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function normalizeProvider(value: string | undefined): AtlasProviderName {
   if (value === 'anthropic' || value === 'ollama' || value === 'gemini') {
     return value;
@@ -33,6 +39,7 @@ export function loadAtlasConfig(
   const workspace = readArgValue(argv, '--workspace') ?? readEnv('ATLAS_WORKSPACE') ?? defaults.workspace ?? path.basename(sourceRoot).toLowerCase();
   const dbPath = readArgValue(argv, '--db') ?? readEnv('ATLAS_DB_PATH') ?? defaults.dbPath ?? path.join(cwd, '.atlas', 'atlas.sqlite');
   const provider = normalizeProvider(readArgValue(argv, '--provider') ?? readEnv('ATLAS_PROVIDER'));
+  const concurrency = readInt(readArgValue(argv, '--concurrency') ?? readEnv('ATLAS_CONCURRENCY'), 10);
 
   return {
     workspace,
@@ -44,6 +51,7 @@ export function loadAtlasConfig(
     geminiApiKey: readEnv('GEMINI_API_KEY') ?? '',
     voyageApiKey: readEnv('VOYAGE_API_KEY') ?? '',
     ollamaBaseUrl: readArgValue(argv, '--ollama-base-url') ?? readEnv('OLLAMA_BASE_URL') ?? 'http://127.0.0.1:11434',
+    concurrency,
     sqliteVecExtension: readArgValue(argv, '--sqlite-vec-extension') ?? readEnv('ATLAS_SQLITE_VEC_EXTENSION') ?? '',
   };
 }

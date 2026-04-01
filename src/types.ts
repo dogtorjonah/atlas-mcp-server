@@ -125,6 +125,7 @@ export interface AtlasServerConfig {
   geminiApiKey: string;
   voyageApiKey: string;
   ollamaBaseUrl: string;
+  concurrency: number;
   sqliteVecExtension: string;
 }
 
