@@ -11,7 +11,6 @@ import { createOpenAIProvider } from './providers/openai.js';
 import { createOllamaProvider } from './providers/ollama.js';
 import { runFullPipeline } from './pipeline/index.js';
 import { startAtlasWatcher } from './watcher.js';
-import { registerFlushTool } from './tools/flush.js';
 import { registerLookupTool } from './tools/lookup.js';
 import { registerReindexTool } from './tools/reindex.js';
 import { registerSearchTool } from './tools/search.js';
@@ -231,7 +230,6 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   registerSearchTool(server, runtime);
   registerLookupTool(server, runtime);
-  registerFlushTool(server, runtime);
   registerReindexTool(server, runtime);
   registerBridgeTools(server, runtime);
 

@@ -13,11 +13,17 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
   server.tool(
     'atlas_reindex',
     {
-      filePath: z.string().optional(),
+      files: z.array(z.string().min(1)).optional(),
       workspace: z.string().optional(),
       confirm: z.boolean().optional(),
+      force: z.boolean().optional(),
     },
-    async ({ filePath, workspace, confirm }: { filePath?: string; workspace?: string; confirm?: boolean }) => {
+    async ({ files, workspace, confirm, force }: {
+      files?: string[];
+      workspace?: string;
+      confirm?: boolean;
+      force?: boolean;
+    }) => {
       if (!runtime.provider) {
         return {
           content: [{
@@ -29,14 +35,23 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
 
       const activeWorkspace = workspace ?? runtime.config.workspace;
 
-      if (filePath) {
-        enqueueReextract(runtime.db, activeWorkspace, filePath, 'manual_reindex');
+      // ── Mode: flush specific files ──
+      if (files && files.length > 0) {
+        const uniqueFiles = [...new Set(files.map((f) => f.trim()).filter(Boolean))];
+        const triggerReason = force ? 'flush_force' : 'flush';
+        for (const filePath of uniqueFiles) {
+          enqueueReextract(runtime.db, activeWorkspace, filePath, triggerReason);
+        }
         await notifyAtlasContextUpdated(runtime.server);
         return {
-          content: [{ type: 'text', text: `Queued ${filePath} for re-extraction.` }],
+          content: [{
+            type: 'text',
+            text: `Queued ${uniqueFiles.length} file${uniqueFiles.length === 1 ? '' : 's'} for re-extraction.`,
+          }],
         };
       }
 
+      // ── Mode: dry-run / status ──
       const fileCount = listAtlasFiles(runtime.db, activeWorkspace).length;
       const profile = resolveCostProfile(runtime.config);
       const estimate = estimateInitCost(fileCount, profile);
@@ -62,19 +77,23 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
               `atlas_reindex dry-run: ${fileCount} files (~${estimate.totalCalls} API calls)`,
               `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
               `Estimated cost: ~${formatUsd(estimate.estimatedUsd)}`,
+              `Mode: ${force ? 'FORCE (wipe + rebuild from scratch)' : 'resume-safe (skip completed files)'}`,
               ``,
-              `Call atlas_reindex again with confirm=true to proceed.`,
+              `Call atlas_reindex with confirm=true to proceed.`,
+              `Pass files=["path/to/file.ts"] to re-extract specific files instead.`,
             ].join('\n'),
           }],
         };
       }
 
+      // ── Mode: full pipeline ──
       if (activeReindex) {
         return {
           content: [{ type: 'text', text: 'A reindex is already in progress.' }],
         };
       }
 
+      const modeLabel = force ? 'force rebuild' : 'resume-safe';
       reindexStartedAt = new Date();
       reindexFileCount = fileCount;
       activeReindex = runRuntimeReindex({
@@ -98,7 +117,7 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
         content: [{
           type: 'text',
           text: [
-            `Reindex started in background: ${fileCount} files (~${estimate.totalCalls} API calls)`,
+            `Reindex started in background (${modeLabel}): ${fileCount} files (~${estimate.totalCalls} API calls)`,
             `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
             `Estimated cost: ~${formatUsd(estimate.estimatedUsd)}`,
             `Atlas context will update when complete.`,
