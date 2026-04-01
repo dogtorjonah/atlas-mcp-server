@@ -5,9 +5,9 @@ import { enqueueReextract, listAtlasFiles } from '../db.js';
 import { notifyAtlasContextUpdated } from '../resources/context.js';
 import { estimateInitCost, formatUsd, resolveCostProfile, runRuntimeReindex } from '../pipeline/index.js';
 
-let activeReindex: Promise<void> | null = null;
-let reindexStartedAt: Date | null = null;
-let reindexFileCount: number | null = null;
+const activeReindexes = new Map<string, Promise<void>>();
+const reindexStartedAt = new Map<string, Date>();
+const reindexFileCount = new Map<string, number>();
 
 export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): void {
   server.tool(
@@ -57,13 +57,14 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
       const estimate = estimateInitCost(fileCount, profile);
 
       if (!confirm) {
-        if (activeReindex && reindexStartedAt) {
-          const elapsed = Math.round((Date.now() - reindexStartedAt.getTime()) / 1000);
+        const startedAt = reindexStartedAt.get(activeWorkspace);
+        if (activeReindexes.has(activeWorkspace) && startedAt) {
+          const elapsed = Math.round((Date.now() - startedAt.getTime()) / 1000);
           return {
             content: [{
               type: 'text',
               text: [
-                `Reindex in progress: ${reindexFileCount ?? '?'} files, running for ${elapsed}s`,
+                `Reindex in progress: ${reindexFileCount.get(activeWorkspace) ?? '?'} files, running for ${elapsed}s`,
                 `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
                 `Atlas context will update when complete.`,
               ].join('\n'),
@@ -87,16 +88,16 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
       }
 
       // ── Mode: full pipeline ──
-      if (activeReindex) {
+      if (activeReindexes.has(activeWorkspace)) {
         return {
           content: [{ type: 'text', text: 'A reindex is already in progress.' }],
         };
       }
 
       const modeLabel = force ? 'force rebuild' : 'resume-safe';
-      reindexStartedAt = new Date();
-      reindexFileCount = fileCount;
-      activeReindex = runRuntimeReindex({
+      reindexStartedAt.set(activeWorkspace, new Date());
+      reindexFileCount.set(activeWorkspace, fileCount);
+      activeReindexes.set(activeWorkspace, runRuntimeReindex({
         db: runtime.db,
         workspace: activeWorkspace,
         rootDir: runtime.config.sourceRoot,
@@ -108,10 +109,10 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
       }).catch((error: unknown) => {
         console.error('[atlas-reindex] failed:', error instanceof Error ? error.message : String(error));
       }).finally(() => {
-        activeReindex = null;
-        reindexStartedAt = null;
-        reindexFileCount = null;
-      });
+        activeReindexes.delete(activeWorkspace);
+        reindexStartedAt.delete(activeWorkspace);
+        reindexFileCount.delete(activeWorkspace);
+      }));
 
       return {
         content: [{
