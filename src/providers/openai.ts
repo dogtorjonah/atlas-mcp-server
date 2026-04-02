@@ -164,11 +164,11 @@ export function createOpenAIProvider(config: AtlasServerConfig): AtlasProvider {
         messages: [
           {
             role: 'system',
-            content: 'You are a senior TypeScript architect writing concise file summaries.',
+            content: 'You are a senior software architect writing concise file summaries.',
           },
           {
             role: 'user',
-            content: `Analyze this TypeScript file and write a concise 2-3 sentence summary of its purpose, where it fits in the architecture, and what to watch out for when modifying it.\n\nFile: ${filePath}\n\n\`\`\`typescript\n${sourceText.slice(0, 8000)}\n\`\`\`\n\nRespond with ONLY the summary text. No markdown, no headers.`,
+            content: `Analyze this file and write a concise 2-3 sentence summary of its purpose, where it fits in the architecture, and what to watch out for when modifying it.\n\nFile: ${filePath}\n\n\`\`\`\n${sourceText.slice(0, 8000)}\n\`\`\`\n\nRespond with ONLY the summary text. No markdown, no headers.`,
           },
         ],
       });

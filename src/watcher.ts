@@ -9,7 +9,7 @@ import { runPass2 } from './pipeline/pass2.js';
 import type { Pass0FileInfo } from './pipeline/pass0.js';
 import type { AtlasFileRecord, AtlasRuntime } from './types.js';
 
-const WATCH_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx']);
+const WATCH_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.md']);
 const DEBOUNCE_MS = 5_000;
 const IGNORED_PARTS = new Set(['.atlas', '.git', 'dist', 'node_modules']);
 

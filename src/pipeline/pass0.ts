@@ -42,6 +42,11 @@ const CATEGORY_PREFIXES: Record<string, string> = {
 };
 
 function assignCluster(relativePath: string): string {
+  // All markdown files → docs
+  if (relativePath.endsWith('.md')) {
+    return 'docs';
+  }
+
   const parts = relativePath.split('/');
 
   // Non-src top-level directories → misc-{dir}
@@ -102,7 +107,8 @@ async function discoverFiles(dir: string, files: string[] = []): Promise<string[
       continue;
     }
 
-    if (!entry.name.endsWith('.ts') && !entry.name.endsWith('.tsx')) {
+    const ext = path.extname(entry.name).toLowerCase();
+    if (ext !== '.ts' && ext !== '.tsx' && ext !== '.md') {
       continue;
     }
 
@@ -280,7 +286,7 @@ export async function runPass0(
         key_types: [],
         hazards: [],
         conventions: [],
-        language: relativePath.endsWith('.tsx') ? 'tsx' : 'typescript',
+        language: relativePath.endsWith('.md') ? 'markdown' : relativePath.endsWith('.tsx') ? 'tsx' : 'typescript',
         blurb: '',
         purpose: '',
         extraction_model: null,
@@ -297,7 +303,7 @@ export async function runPass0(
         loc,
         exports,
         dependencies: { imports: resolvedImports, imported_by: [] },
-        language: relativePath.endsWith('.tsx') ? 'tsx' : 'typescript',
+        language: relativePath.endsWith('.md') ? 'markdown' : relativePath.endsWith('.tsx') ? 'tsx' : 'typescript',
       });
     }
 

@@ -165,7 +165,7 @@ export function createGeminiProvider(config: AtlasServerConfig): AtlasProvider {
         contents: [{
           role: 'user',
           parts: [{
-            text: `Analyze this TypeScript file and write a concise 2-3 sentence summary of its purpose, where it fits in the architecture, and what to watch out for when modifying it.\n\nFile: ${filePath}\n\n\`\`\`typescript\n${sourceText.slice(0, 8000)}\n\`\`\`\n\nRespond with ONLY the summary text. No markdown, no headers.`,
+            text: `Analyze this file and write a concise 2-3 sentence summary of its purpose, where it fits in the architecture, and what to watch out for when modifying it.\n\nFile: ${filePath}\n\n\`\`\`\n${sourceText.slice(0, 8000)}\n\`\`\`\n\nRespond with ONLY the summary text. No markdown, no headers.`,
           }],
         }],
       });
