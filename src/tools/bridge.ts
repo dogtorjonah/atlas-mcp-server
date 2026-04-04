@@ -10,6 +10,7 @@
 
 import { z } from 'zod';
 import fs from 'node:fs';
+import fsAsync from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import Database from 'better-sqlite3';
@@ -279,8 +280,9 @@ export function registerBridgeTools(server: McpServer, runtime: AtlasRuntime): v
     {
       file_path: z.string().min(1),
       workspace: z.string().min(1),
+      includeSource: z.boolean().optional().describe('Include source code in output (default true). Set false for metadata-only.'),
     },
-    async ({ file_path, workspace }: { file_path: string; workspace: string }) => {
+    async ({ file_path, workspace, includeSource }: { file_path: string; workspace: string; includeSource?: boolean }) => {
       const allDbs = discoverWorkspaces(runtime.config.sourceRoot);
       const target = allDbs.find((d) => d.workspace === workspace);
       if (!target) {
@@ -361,6 +363,22 @@ export function registerBridgeTools(server: McpServer, runtime: AtlasRuntime): v
             return `  - \`${name}\` (${info.type}, blast_radius=${info.blast_radius}, ${info.total_usages} usages)\n${callerLines.join('\n')}`;
           });
           sections.push(`**🔗 Cross-References (${totalRefs} total):**\n${lines.join('\n')}`);
+        }
+      }
+
+      // ── Source code (opt-out via includeSource: false) ──
+      const shouldIncludeSource = includeSource !== false;
+      if (shouldIncludeSource && target.sourceRoot) {
+        try {
+          const fullPath = path.join(target.sourceRoot, file_path);
+          const content = await fsAsync.readFile(fullPath, 'utf8');
+          const sourceLines = content.split('\n');
+          const MAX_SOURCE_LINES = 500;
+          const truncated = sourceLines.length > MAX_SOURCE_LINES;
+          const displayLines = truncated ? sourceLines.slice(0, MAX_SOURCE_LINES) : sourceLines;
+          sections.push(`**Source (${sourceLines.length} lines${truncated ? `, showing first ${MAX_SOURCE_LINES}` : ''}):**\n\`\`\`\n${displayLines.join('\n')}\n\`\`\`${truncated ? `\n... ${sourceLines.length - MAX_SOURCE_LINES} more lines.` : ''}`);
+        } catch {
+          // File not readable — skip source
         }
       }
 

@@ -55,10 +55,11 @@ function formatChangelogRow(row: ChangelogRow, index: number): string {
   return lines;
 }
 
-async function currentFileHash(sourceRoot: string, filePath: string): Promise<string | null> {
+async function readSourceFile(sourceRoot: string, filePath: string): Promise<{ hash: string; content: string } | null> {
   try {
     const content = await fs.readFile(path.join(sourceRoot, filePath), 'utf8');
-    return createHash('sha1').update(content).digest('hex');
+    const hash = createHash('sha1').update(content).digest('hex');
+    return { hash, content };
   } catch {
     return null;
   }
@@ -78,8 +79,9 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
     {
       filePath: z.string().min(1),
       workspace: z.string().optional(),
+      includeSource: z.boolean().optional().describe('Include source code in output (default true). Set false for metadata-only.'),
     },
-    async ({ filePath, workspace }: { filePath: string; workspace?: string }) => {
+    async ({ filePath, workspace, includeSource }: { filePath: string; workspace?: string; includeSource?: boolean }) => {
       const ws = workspace ?? runtime.config.workspace;
       const row = getAtlasFile(runtime.db, ws, filePath);
       trackQuery(filePath, row ? [row.id] : [], row ? [row.file_path] : []);
@@ -87,8 +89,8 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
         return { content: [{ type: 'text', text: `No atlas row found for ${filePath}.` }] };
       }
 
-      const currentHash = await currentFileHash(runtime.config.sourceRoot, filePath);
-      const stale = currentHash && row.file_hash && currentHash !== row.file_hash
+      const sourceFile = await readSourceFile(runtime.config.sourceRoot, filePath);
+      const stale = sourceFile && row.file_hash && sourceFile.hash !== row.file_hash
         ? '\n⚠️  STALE: file has changed since last extraction.\n'
         : '';
 
@@ -198,6 +200,23 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
           lines.push(formatNeighborBlurb(caller, neighbor?.blurb || neighbor?.purpose));
         }
         if (callers.length > 20) lines.push(`  ... and ${callers.length - 20} more`);
+      }
+
+      // ── Source code (opt-out via includeSource: false) ──
+      const shouldIncludeSource = includeSource !== false;
+      if (shouldIncludeSource && sourceFile) {
+        const sourceLines = sourceFile.content.split('\n');
+        const MAX_SOURCE_LINES = 500;
+        const truncated = sourceLines.length > MAX_SOURCE_LINES;
+        const displayLines = truncated ? sourceLines.slice(0, MAX_SOURCE_LINES) : sourceLines;
+        lines.push('');
+        lines.push(`## Source (${sourceLines.length} lines${truncated ? `, showing first ${MAX_SOURCE_LINES}` : ''})`);
+        lines.push('```');
+        lines.push(displayLines.join('\n'));
+        lines.push('```');
+        if (truncated) {
+          lines.push(`\n... ${sourceLines.length - MAX_SOURCE_LINES} more lines. Use the Read tool to see the full file.`);
+        }
       }
 
       return {
