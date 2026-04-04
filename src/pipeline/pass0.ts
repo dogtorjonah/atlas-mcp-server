@@ -34,6 +34,30 @@ const EXCLUDE_DIRS = new Set([
   '.svelte-kit', '.nuxt', '.output',
 ]);
 
+const ALLOWED_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.sql',
+  '.py',
+  '.go', '.rs', '.java', '.kt', '.swift',
+  '.vue', '.svelte',
+  '.md',
+]);
+
+const EXT_TO_LANGUAGE: Record<string, string> = {
+  '.ts': 'typescript', '.tsx': 'tsx', '.js': 'javascript', '.jsx': 'jsx',
+  '.mjs': 'javascript', '.cjs': 'javascript',
+  '.sql': 'sql',
+  '.py': 'python',
+  '.go': 'go', '.rs': 'rust', '.java': 'java', '.kt': 'kotlin', '.swift': 'swift',
+  '.vue': 'vue', '.svelte': 'svelte',
+  '.md': 'markdown',
+};
+
+function detectLanguage(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  return EXT_TO_LANGUAGE[ext] ?? 'unknown';
+}
+
 // Category prefixes for common src/ directory conventions.
 // Only affects display names — no files are excluded.
 const CATEGORY_PREFIXES: Record<string, string> = {
@@ -108,7 +132,7 @@ async function discoverFiles(dir: string, files: string[] = []): Promise<string[
     }
 
     const ext = path.extname(entry.name).toLowerCase();
-    if (ext !== '.ts' && ext !== '.tsx' && ext !== '.md') {
+    if (!ALLOWED_EXTENSIONS.has(ext)) {
       continue;
     }
 
@@ -286,7 +310,7 @@ export async function runPass0(
         key_types: [],
         hazards: [],
         conventions: [],
-        language: relativePath.endsWith('.md') ? 'markdown' : relativePath.endsWith('.tsx') ? 'tsx' : 'typescript',
+        language: detectLanguage(relativePath),
         blurb: '',
         purpose: '',
         extraction_model: null,
@@ -303,7 +327,7 @@ export async function runPass0(
         loc,
         exports,
         dependencies: { imports: resolvedImports, imported_by: [] },
-        language: relativePath.endsWith('.md') ? 'markdown' : relativePath.endsWith('.tsx') ? 'tsx' : 'typescript',
+        language: detectLanguage(relativePath),
       });
     }
 
