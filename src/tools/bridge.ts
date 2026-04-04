@@ -310,9 +310,16 @@ export function registerBridgeTools(server: McpServer, runtime: AtlasRuntime): v
       const patterns = parseJsonArray(row.patterns);
       const hazards = parseJsonArray(row.hazards);
       const conventions = parseJsonArray(row.conventions);
+      const dataFlows = parseJsonArray(row.data_flows);
 
       let publicApi: Array<{ name: string; type: string; signature?: string; description?: string }> = [];
       try { publicApi = JSON.parse(String(row.public_api ?? '[]')); } catch { /* */ }
+      let keyTypes: Array<{ name: string; kind: string; exported?: boolean; description?: string }> = [];
+      try { keyTypes = JSON.parse(String(row.key_types ?? '[]')); } catch { /* */ }
+      let dependencies: Record<string, unknown> = {};
+      try { dependencies = row.dependencies ? JSON.parse(String(row.dependencies)) : {}; } catch { /* */ }
+      let crossRefs: { symbols?: Record<string, { type: string; call_sites?: Array<{ file: string; usage_type: string; count: number; context: string }>; total_usages: number; blast_radius: string }>; total_cross_references?: number } | null = null;
+      try { crossRefs = row.cross_refs ? JSON.parse(String(row.cross_refs)) : null; } catch { /* */ }
 
       const sections: string[] = [];
       sections.push(`# [${workspace}] ${file_path}`);
@@ -326,8 +333,36 @@ export function registerBridgeTools(server: McpServer, runtime: AtlasRuntime): v
         sections.push(`**Public API:**\n${apis.join('\n')}`);
       }
       if (patterns?.length) sections.push(`**Patterns:** ${patterns.join(', ')}`);
+
+      if (dependencies) {
+        const deps = dependencies as { imports?: string[]; imported_by?: string[] };
+        if (deps.imports?.length) sections.push(`**Imports:** ${deps.imports.join(', ')}`);
+        if (deps.imported_by?.length) sections.push(`**Imported by:** ${deps.imported_by.join(', ')}`);
+      }
+
+      if (dataFlows?.length) sections.push(`**Data flows:**\n${dataFlows.map((f) => `  - ${f}`).join('\n')}`);
+
+      if (keyTypes?.length) {
+        const types = keyTypes.map((t) =>
+          `  - \`${t.name}\` (${t.kind ?? '?'}${t.exported ? ', exported' : ''})${t.description ? ` — ${t.description}` : ''}`,
+        );
+        sections.push(`**Key types:**\n${types.join('\n')}`);
+      }
+
       if (hazards?.length) sections.push(`**⚠️ Hazards:**\n${hazards.map((h) => `  - ${h}`).join('\n')}`);
       if (conventions?.length) sections.push(`**Conventions:**\n${conventions.map((c) => `  - ${c}`).join('\n')}`);
+
+      if (crossRefs?.symbols) {
+        const syms = Object.entries(crossRefs.symbols);
+        if (syms.length > 0) {
+          const totalRefs = crossRefs.total_cross_references ?? 0;
+          const lines = syms.map(([name, info]) => {
+            const callerLines = info.call_sites?.map((cs) => `      ${cs.file} (${cs.usage_type}, ${cs.count}x): ${cs.context}`) || [];
+            return `  - \`${name}\` (${info.type}, blast_radius=${info.blast_radius}, ${info.total_usages} usages)\n${callerLines.join('\n')}`;
+          });
+          sections.push(`**🔗 Cross-References (${totalRefs} total):**\n${lines.join('\n')}`);
+        }
+      }
 
       return { content: [{ type: 'text', text: sections.join('\n\n') }] };
     },

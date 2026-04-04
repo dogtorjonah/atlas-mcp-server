@@ -2,7 +2,7 @@
 
 **A codebase brain for any LLM.**
 
-`@voxxo/atlas` indexes a TypeScript codebase into structured knowledge — purpose, public API, patterns, hazards, conventions, dependencies, data flows — and serves that knowledge through MCP tools so AI agents can search, inspect, and update code knowledge on demand.
+`@voxxo/atlas` indexes a TypeScript/JavaScript codebase and its documentation into structured knowledge — purpose, public API, patterns, hazards, conventions, dependencies, data flows — and serves that knowledge through MCP tools so AI agents can search, inspect, and update code knowledge on demand.
 
 ## What It Does
 
@@ -54,8 +54,7 @@ The init wizard walks you through the codebase path, workspace, provider, model,
 
 | Tool | Purpose |
 |------|---------|
-| `atlas_reindex` | Rebuild atlas data for the workspace — supports dry-run, full pipeline, pass2-only reruns, and live progress tracking |
-| `atlas_flush` | Queue specific files for immediate re-extraction |
+| `atlas_reindex` | Rebuild atlas data for the workspace — supports dry-run, full pipeline, pass2-only reruns, file-targeted re-extraction, and live progress tracking |
 
 ### Cross-Workspace Bridge
 
@@ -134,7 +133,6 @@ After the initial index, agents keep the atlas current by calling `atlas_commit`
 | `--provider` | Choose `openai`, `anthropic`, `gemini`, or `ollama` |
 | `--concurrency` | Set batch size for init runs |
 | `--yes` | Skip interactive confirmation prompts |
-| `--force` | Delete and rebuild the database from scratch |
 | `--phase pass2` | Run only pass 2 (cross-refs) during init |
 | `--file <path>` | Target specific files during init (repeatable) |
 

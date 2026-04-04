@@ -133,10 +133,47 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
         }
       }
 
+      if (row.dependencies) {
+        const deps = row.dependencies as { imports?: string[]; imported_by?: string[] };
+        if (deps.imports?.length) {
+          lines.push('');
+          lines.push(`## Dependencies (imports)`);
+          lines.push(deps.imports.join(', '));
+        }
+        if (deps.imported_by?.length) {
+          lines.push('');
+          lines.push(`## Dependencies (imported by)`);
+          lines.push(deps.imported_by.join(', '));
+        }
+      }
+
       if (Array.isArray(row.data_flows) && row.data_flows.length > 0) {
         lines.push('');
         lines.push(`## Data Flows`);
         for (const f of row.data_flows) lines.push(`- ${f}`);
+      }
+
+      if (Array.isArray(row.key_types) && row.key_types.length > 0) {
+        lines.push('');
+        lines.push(`## Key Types`);
+        for (const t of (row.key_types as Array<{ name?: string; kind?: string; exported?: boolean; description?: string }>).slice(0, 20)) {
+          lines.push(`- \`${t.name}\` (${t.kind ?? '?'}${t.exported ? ', exported' : ''})${t.description ? ` — ${t.description}` : ''}`);
+        }
+      }
+
+      if (row.cross_refs?.symbols) {
+        const syms = Object.entries(row.cross_refs.symbols);
+        if (syms.length > 0) {
+          const totalRefs = row.cross_refs.total_cross_references ?? 0;
+          lines.push('');
+          lines.push(`## Cross-References (${totalRefs} total)`);
+          for (const [name, info] of syms) {
+            const callerLines = info.call_sites?.map((cs: { file: string; usage_type: string; count: number; context: string }) =>
+              `    ${cs.file} (${cs.usage_type}, ${cs.count}x): ${cs.context}`) || [];
+            lines.push(`- \`${name}\` (${info.type}, blast_radius=${info.blast_radius}, ${info.total_usages} usages)`);
+            if (callerLines.length > 0) lines.push(callerLines.join('\n'));
+          }
+        }
       }
 
       // Neighborhood — import graph proximity
