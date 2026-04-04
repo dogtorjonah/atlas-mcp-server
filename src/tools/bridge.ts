@@ -13,6 +13,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import Database from 'better-sqlite3';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { toolWithDescription } from './helpers.js';
 import type { AtlasRuntime } from '../types.js';
 import type { AtlasDatabase } from '../db.js';
 
@@ -129,8 +130,9 @@ function getFileCount(db: AtlasDatabase, workspace: string): number {
 
 export function registerBridgeTools(server: McpServer, runtime: AtlasRuntime): void {
   // ── atlas_bridge_list ──
-  server.tool(
+  toolWithDescription(server)(
     'atlas_bridge_list',
+    'Discover all local atlas SQLite databases on this machine. Shows each workspace name, file count, and source root. Use to see what repositories have atlas knowledge available for cross-workspace search.',
     {},
     async () => {
       const allDbs = discoverWorkspaces(runtime.config.sourceRoot);

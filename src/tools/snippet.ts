@@ -3,6 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
+import { toolWithDescription } from './helpers.js';
 import { discoverWorkspaces } from './bridge.js';
 
 interface WorkspaceContext {
@@ -119,8 +120,9 @@ function findSymbolRange(source: string, symbol: string): SymbolRange | null {
 }
 
 export function registerSnippetTool(server: McpServer, runtime: AtlasRuntime): void {
-  server.tool(
+  toolWithDescription(server)(
     'atlas_snippet',
+    'Extract exact source code snippets from a file by symbol name or line range. Provide a symbol name to get its full declaration, or startLine/endLine for a specific range. Returns code with line numbers.',
     {
       filePath: z.string().min(1),
       symbol: z.string().min(1).optional(),

@@ -4,6 +4,7 @@ import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
 import type { AtlasDatabase } from '../db.js';
 import { getAtlasFile } from '../db.js';
 import { discoverWorkspaces } from './bridge.js';
+import { toolWithDescription } from './helpers.js';
 
 interface WorkspaceContext {
   db: AtlasDatabase;
@@ -51,8 +52,9 @@ function topConsumers(row: AtlasFileRecord): Array<{ file: string; count: number
 }
 
 export function registerBriefTool(server: McpServer, runtime: AtlasRuntime): void {
-  server.tool(
+  toolWithDescription(server)(
     'atlas_brief',
+    'Quick one-screen summary of a file: purpose, top API surface, and top consumers. Lighter than atlas_lookup — use when you just need fast orientation on what a file does.',
     {
       filePath: z.string().min(1),
       workspace: z.string().optional(),

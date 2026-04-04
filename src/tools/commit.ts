@@ -15,6 +15,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
+import { toolWithDescription } from './helpers.js';
 import type { AtlasChangelogRecord } from '../db.js';
 import {
   getAtlasFile,
@@ -62,8 +63,9 @@ const apiEntrySchema = z.object({
 // ── Tool Registration ────────────────────────────────────────────────────────
 
 export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): void {
-  server.tool(
+  toolWithDescription(server)(
     'atlas_commit',
+    'Record changelog rationale and update the atlas entry for a file in one call. Combines changelog logging with inline atlas metadata updates (purpose, public_api, conventions, hazards, patterns, etc.). Use after editing a file to keep the atlas current.',
     {
       // ── Changelog fields (same as atlas_log) ──
       file_path: z.string().min(1),

@@ -6,6 +6,7 @@ import type { AtlasCrossRefSymbol, AtlasFileRecord, AtlasRuntime } from '../type
 import type { AtlasDatabase } from '../db.js';
 import { listAtlasFiles, listImportEdges } from '../db.js';
 import { discoverWorkspaces } from './bridge.js';
+import { toolWithDescription } from './helpers.js';
 
 const GAP_TYPES = [
   'loaded_not_used',
@@ -363,8 +364,9 @@ function formatFinding(finding: GapFinding): string {
 }
 
 export function registerGapsTool(server: McpServer, runtime: AtlasRuntime): void {
-  server.tool(
+  toolWithDescription(server)(
     'atlas_gaps',
+    'Detect structural gaps in the codebase: dead exports no one imports, unused imports, loaded-but-unused data, installed-but-never-imported packages. Can scope to a single file or cluster. Returns findings with confidence scores. Use during cleanup or before refactoring.',
     {
       filePath: z.string().min(1).optional(),
       cluster: z.string().min(1).optional(),

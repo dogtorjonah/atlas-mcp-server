@@ -3,6 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
+import { toolWithDescription } from './helpers.js';
 import { enqueueReextract, listAtlasFiles } from '../db.js';
 import { notifyAtlasContextUpdated } from '../resources/context.js';
 import { estimateInitCost, formatUsd, resolveCostProfile, runRuntimeReindex } from '../pipeline/index.js';
@@ -34,8 +35,9 @@ function readStatus(sourceRoot: string): null | {
 }
 
 export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): void {
-  server.tool(
+  toolWithDescription(server)(
     'atlas_reindex',
+    'Re-run the atlas extraction pipeline. No args = dry-run status. files=["a.ts"] = re-extract specific files. confirm=true = full pipeline (resume-safe). confirm=true + phase="pass2" = recompute cross-references only. The pipeline is resume-safe — safe to kill and restart.',
     {
       files: z.array(z.string().min(1)).optional(),
       workspace: z.string().optional(),

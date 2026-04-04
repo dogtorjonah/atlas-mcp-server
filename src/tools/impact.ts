@@ -4,6 +4,7 @@ import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
 import type { AtlasDatabase } from '../db.js';
 import { getAtlasFile, listAtlasFiles, listImportedBy } from '../db.js';
 import { discoverWorkspaces } from './bridge.js';
+import { toolWithDescription } from './helpers.js';
 
 const DEFAULT_DEPTH = 3;
 const MAX_DEPTH = 8;
@@ -205,8 +206,9 @@ function buildOutput(
 }
 
 export function registerImpactTool(server: McpServer, runtime: AtlasRuntime): void {
-  server.tool(
+  toolWithDescription(server)(
     'atlas_impact',
+    'Analyze the blast radius of a file or symbol — find all downstream consumers. Uses the import graph and cross-reference data to walk dependents at configurable depth. Returns direct consumers (depth 1) and transitive consumers (depth 2+) with usage scores. Best for: "what breaks if I change X?"',
     {
       filePath: z.string().min(1),
       symbol: z.string().min(1).optional(),

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
+import { toolWithDescription } from './helpers.js';
 import type { AtlasChangelogRecord, AtlasChangelogSearchHit } from '../db.js';
 import {
   insertAtlasChangelog,
@@ -119,8 +120,9 @@ function formatEntry(entry: AtlasChangelogRecord): string {
 }
 
 export function registerChangelogTools(server: McpServer, runtime: AtlasRuntime): void {
-  server.tool(
+  toolWithDescription(server)(
     'atlas_log',
+    'Record a changelog entry for a file — patterns added/removed, hazards, breaking changes. Use atlas_commit instead for combined changelog + atlas update in one call.',
     {
       file_path: z.string().min(1),
       summary: z.string().min(1),
@@ -199,8 +201,9 @@ export function registerChangelogTools(server: McpServer, runtime: AtlasRuntime)
     },
   );
 
-  server.tool(
+  toolWithDescription(server)(
     'atlas_changelog',
+    'Query changelog history with filters: by file, cluster, date range, breaking-only, or verification status. Returns timestamped changelog entries showing what changed and why.',
     {
       file: z.string().optional(),
       file_prefix: z.string().optional(),

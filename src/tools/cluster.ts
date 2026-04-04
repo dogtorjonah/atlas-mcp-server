@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
 import { listClusterFiles } from '../db.js';
+import { toolWithDescription } from './helpers.js';
 
 function listClusters(runtime: AtlasRuntime, workspace: string): string[] {
   const rows = runtime.db.prepare(
@@ -13,8 +14,9 @@ function listClusters(runtime: AtlasRuntime, workspace: string): string[] {
 }
 
 export function registerClusterTool(server: McpServer, runtime: AtlasRuntime): void {
-  server.tool(
+  toolWithDescription(server)(
     'atlas_cluster',
+    'List all files in a named cluster from the codebase atlas. Clusters group related files by domain (e.g., "instance-lifecycle", "signal-coordination"). Returns file paths with purpose summaries. Use before planning multi-file changes.',
     {
       cluster: z.string().min(1),
       workspace: z.string().optional(),

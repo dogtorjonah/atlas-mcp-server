@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
 import type { AtlasDatabase } from '../db.js';
 import { searchAtlasFiles, searchFts, searchVector } from '../db.js';
+import { toolWithDescription } from './helpers.js';
 import { trackQuery } from '../queryLog.js';
 import { discoverWorkspaces } from './bridge.js';
 
@@ -98,8 +99,9 @@ function formatResultWithWorkspace(result: RankedResult, ws: string, showWorkspa
 }
 
 export function registerSearchTool(server: McpServer, runtime: AtlasRuntime): void {
-  server.tool(
+  toolWithDescription(server)(
     'atlas_search',
+    'Search the codebase atlas using natural language. Finds relevant files by semantic similarity using vector embeddings matched against file purposes, patterns, and descriptions. Best for: "where does X happen?", "which files handle Y?", "find code related to Z". Supports cross-workspace search.',
     {
       query: z.string().min(1),
       limit: z.number().int().min(1).max(30).optional(),

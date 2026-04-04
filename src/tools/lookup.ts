@@ -4,6 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
+import { toolWithDescription } from './helpers.js';
 import type { AtlasDatabase } from '../db.js';
 import { getAtlasFile, listImports, listImportedBy } from '../db.js';
 import { trackQuery } from '../queryLog.js';
@@ -75,8 +76,9 @@ function formatNeighborBlurb(filePath: string, blurb: string | undefined | null,
 }
 
 export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): void {
-  server.tool(
+  toolWithDescription(server)(
     'atlas_lookup',
+    'Get the full structured extraction for a specific file. Returns: purpose, public API, patterns, dependencies, data flows, key types, hazards, conventions, and cross-references. Includes staleness check — warns if the file changed since last extraction. Use before editing a file.',
     {
       filePath: z.string().min(1),
       workspace: z.string().optional(),

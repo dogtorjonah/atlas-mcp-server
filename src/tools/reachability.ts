@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { listAtlasFiles, listImportEdges } from '../db.js';
 import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
+import { toolWithDescription } from './helpers.js';
 
 type ReachabilityMode = 'dead_exports' | 'dead_files' | 'path_query' | 'entrypoints';
 
@@ -448,8 +449,9 @@ function formatPathQuery(ctx: ReachabilityContext, from: string, to: string): st
 }
 
 export function registerReachabilityTool(server: McpServer, runtime: AtlasRuntime): void {
-  server.tool(
+  toolWithDescription(server)(
     'atlas_reachability',
+    'Analyze import graph reachability. Modes: "dead_files" finds unreachable files (deletion candidates), "dead_exports" finds exports with zero consumers, "entrypoints" finds graph roots with no importers, "path_query" finds shortest import path between two files. Best for: "is this dead code?", "how does A reach B?"',
     {
       mode: z.enum(['dead_exports', 'dead_files', 'path_query', 'entrypoints']),
       from: z.string().optional(),
