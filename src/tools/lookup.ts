@@ -7,6 +7,7 @@ import type { AtlasRuntime } from '../types.js';
 import type { AtlasDatabase } from '../db.js';
 import { getAtlasFile, listImports, listImportedBy } from '../db.js';
 import { trackQuery } from '../queryLog.js';
+import { discoverWorkspaces } from './bridge.js';
 
 interface ChangelogRow {
   id: number;
@@ -83,13 +84,28 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
     },
     async ({ filePath, workspace, includeSource }: { filePath: string; workspace?: string; includeSource?: boolean }) => {
       const ws = workspace ?? runtime.config.workspace;
-      const row = getAtlasFile(runtime.db, ws, filePath);
+
+      // Resolve DB and sourceRoot — local workspace or cross-workspace via bridge discovery
+      let db: AtlasDatabase = runtime.db;
+      let sourceRoot: string = runtime.config.sourceRoot;
+      if (workspace && workspace !== runtime.config.workspace) {
+        const allDbs = discoverWorkspaces(runtime.config.sourceRoot);
+        const target = allDbs.find((d) => d.workspace === workspace);
+        if (!target) {
+          const available = allDbs.map((d) => d.workspace).join(', ');
+          return { content: [{ type: 'text', text: `Workspace "${workspace}" not found. Available: ${available}` }] };
+        }
+        db = target.db;
+        sourceRoot = target.sourceRoot;
+      }
+
+      const row = getAtlasFile(db, ws, filePath);
       trackQuery(filePath, row ? [row.id] : [], row ? [row.file_path] : []);
       if (!row) {
         return { content: [{ type: 'text', text: `No atlas row found for ${filePath}.` }] };
       }
 
-      const sourceFile = await readSourceFile(runtime.config.sourceRoot, filePath);
+      const sourceFile = await readSourceFile(sourceRoot, filePath);
       const stale = sourceFile && row.file_hash && sourceFile.hash !== row.file_hash
         ? '\n⚠️  STALE: file has changed since last extraction.\n'
         : '';
@@ -100,7 +116,7 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
       if (stale) lines.push(stale);
 
       // ── Recent Changes (atlas_changelog consumer) ──
-      const recentChanges = getRecentChangelog(runtime.db, ws, filePath, 5);
+      const recentChanges = getRecentChangelog(db, ws, filePath, 5);
       if (recentChanges.length > 0) {
         lines.push('');
         lines.push(`## Recent Changes`);
@@ -179,14 +195,14 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
       }
 
       // Neighborhood — import graph proximity
-      const imports = listImports(runtime.db, ws, filePath);
-      const callers = listImportedBy(runtime.db, ws, filePath);
+      const imports = listImports(db, ws, filePath);
+      const callers = listImportedBy(db, ws, filePath);
 
       if (imports.length > 0) {
         lines.push('');
         lines.push(`## Imports (${imports.length} direct dependencies)`);
         for (const imp of imports.slice(0, 20)) {
-          const neighbor = getAtlasFile(runtime.db, ws, imp);
+          const neighbor = getAtlasFile(db, ws, imp);
           lines.push(formatNeighborBlurb(imp, neighbor?.blurb || neighbor?.purpose, neighbor?.key_types));
         }
         if (imports.length > 20) lines.push(`  ... and ${imports.length - 20} more`);
@@ -196,7 +212,7 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
         lines.push('');
         lines.push(`## Callers (${callers.length} files import this)`);
         for (const caller of callers.slice(0, 20)) {
-          const neighbor = getAtlasFile(runtime.db, ws, caller);
+          const neighbor = getAtlasFile(db, ws, caller);
           lines.push(formatNeighborBlurb(caller, neighbor?.blurb || neighbor?.purpose));
         }
         if (callers.length > 20) lines.push(`  ... and ${callers.length - 20} more`);

@@ -24,7 +24,7 @@ const require = createRequire(import.meta.url);
 // Types
 // ---------------------------------------------------------------------------
 
-interface BridgeDb {
+export interface BridgeDb {
   db: AtlasDatabase;
   workspace: string;
   sourceRoot: string;
@@ -59,7 +59,7 @@ function loadSqliteVec(db: AtlasDatabase): void {
   }
 }
 
-function openBridgeDb(workspace: string, sourceRoot: string): BridgeDb | null {
+export function openBridgeDb(workspace: string, sourceRoot: string): BridgeDb | null {
   const dbPath = path.join(sourceRoot, '.atlas', 'atlas.sqlite');
   const existing = bridgeDbs.get(dbPath);
   if (existing) return existing;
@@ -84,7 +84,7 @@ function openBridgeDb(workspace: string, sourceRoot: string): BridgeDb | null {
 // ---------------------------------------------------------------------------
 
 /** Scan common parent dirs for sibling atlas databases */
-function discoverWorkspaces(currentSourceRoot: string): BridgeDb[] {
+export function discoverWorkspaces(currentSourceRoot: string): BridgeDb[] {
   const seen = new Set<string>();
   const results: BridgeDb[] = [];
   const scanDirs = new Set<string>();
