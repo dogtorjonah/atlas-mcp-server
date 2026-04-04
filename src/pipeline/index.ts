@@ -11,7 +11,7 @@ import { buildEmbeddingInput, toFileUpsertInput } from './shared.js';
 import { runPass0, type Pass0FileInfo } from './pass0.js';
 import { runPass05 } from './pass05.js';
 import { runPass1 } from './pass1.js';
-import { runPass2 } from './pass2.js';
+import { persistPass2CrossRefs, runPass2 } from './pass2.js';
 import { createPhaseProgressReporter } from './progress.js';
 
 function createPipelineProvider(config: AtlasServerConfig): AtlasProvider | undefined {
@@ -25,6 +25,8 @@ function createPipelineProvider(config: AtlasServerConfig): AtlasProvider | unde
 export interface AtlasPipelineConfig extends AtlasServerConfig {
   migrationDir: string;
   skipCostConfirmation?: boolean;
+  phase?: 'full' | 'pass2';
+  files?: string[];
 }
 
 export interface FullPipelineResult {
@@ -32,6 +34,9 @@ export interface FullPipelineResult {
   rootDir: string;
   filesProcessed: number;
   filesFailed: number;
+  filesSkipped?: number;
+  filesMissing?: number;
+  phase?: 'full' | 'pass2';
 }
 
 const CHAT_INPUT_TOKENS_PER_CALL = 2000;
@@ -377,9 +382,131 @@ function buildDefaultCrossRefs(file: Pass0FileInfo): AtlasCrossRefs {
  */
 const PHASE_ORDER = ['none', 'pass05', 'pass1', 'embed', 'pass2'] as const;
 type PhaseLevel = (typeof PHASE_ORDER)[number];
+interface Pass2OnlySelection {
+  requestedCount: number;
+  missingRequested: number;
+  skippedPrereq: number;
+  eligible: Pass0FileInfo[];
+}
+interface Pass2OnlyBatchResult {
+  failed: number;
+  succeeded: number;
+  skippedPrereq: number;
+  missingRequested: number;
+  requestedCount: number;
+}
 
 function phaseAtLeast(current: PhaseLevel, target: PhaseLevel): boolean {
   return PHASE_ORDER.indexOf(current) >= PHASE_ORDER.indexOf(target);
+}
+
+function selectPass2Targets(
+  files: Pass0FileInfo[],
+  filePhases: Map<string, PhaseLevel>,
+  requestedFiles?: string[],
+): Pass2OnlySelection {
+  const requestedSet = requestedFiles && requestedFiles.length > 0
+    ? new Set(requestedFiles.map((file) => file.trim()).filter(Boolean))
+    : null;
+  const selected = requestedSet
+    ? files.filter((file) => requestedSet.has(file.filePath))
+    : files;
+  const eligible = selected.filter((file) => phaseAtLeast(filePhases.get(file.filePath) ?? 'none', 'pass1'));
+
+  return {
+    requestedCount: requestedSet?.size ?? files.length,
+    missingRequested: requestedSet ? Math.max(requestedSet.size - selected.length, 0) : 0,
+    skippedPrereq: selected.length - eligible.length,
+    eligible,
+  };
+}
+
+async function runPass2OnlyBatch(
+  batchName: string,
+  files: Pass0FileInfo[],
+  context: BatchPipelineContext,
+  requestedFiles?: string[],
+): Promise<Pass2OnlyBatchResult> {
+  const statusPath = path.join(context.rootDir, '.atlas', 'status.json');
+  const startedAt = new Date().toISOString();
+  const filePhases = new Map<string, PhaseLevel>();
+
+  for (const file of files) {
+    const phase = getFilePhase(context.db, context.workspace, file.filePath, file.fileHash);
+    filePhases.set(file.filePath, phase);
+  }
+
+  const selection = selectPass2Targets(files, filePhases, requestedFiles);
+  const counter = {
+    total: selection.eligible.length,
+    completed: 0,
+    failed: 0,
+    done: false,
+  };
+  const writeStatus = (): void => {
+    try {
+      writeFileSync(statusPath, JSON.stringify({
+        currentPhase: 'pass 2',
+        startedAt,
+        mode: 'pass2',
+        phases: {
+          'pass 0.5': { total: 0, completed: 0, failed: 0, done: true },
+          'pass 1': { total: 0, completed: 0, failed: 0, done: true },
+          embed: { total: 0, completed: 0, failed: 0, done: true },
+          'pass 2': counter,
+        },
+      }), 'utf8');
+    } catch {
+      // ignore write failures
+    }
+  };
+  const onProgress = (event: 'complete' | 'fail'): void => {
+    if (event === 'complete') counter.completed += 1;
+    else counter.failed += 1;
+    writeStatus();
+  };
+
+  if (selection.eligible.length === 0) {
+    try { unlinkSync(statusPath); } catch { /* ignore */ }
+    return {
+      failed: 0,
+      succeeded: 0,
+      skippedPrereq: selection.skippedPrereq,
+      missingRequested: selection.missingRequested,
+      requestedCount: selection.requestedCount,
+    };
+  }
+
+  console.log(
+    `[atlas-init] ${batchName}: pass2-only rerun for ${selection.eligible.length} file(s)`
+    + ` (${selection.skippedPrereq} skipped prerequisites, ${selection.missingRequested} missing requested)`,
+  );
+  writeStatus();
+
+  await runPhaseBatch('pass 2', 'Cross-refs', selection.eligible, context, async (file) => {
+    const pass2 = await runPass2([file], {
+      sourceRoot: context.rootDir,
+      provider: context.provider,
+      db: context.db,
+      workspace: context.workspace,
+    });
+    const crossRefs = pass2[file.filePath] ?? buildDefaultCrossRefs(file);
+    persistPass2CrossRefs(context.db, context.workspace, file.filePath, crossRefs);
+    refreshAtlasRecord(context, file.filePath);
+  }, onProgress);
+  counter.done = true;
+  writeStatus();
+
+  try { unlinkSync(statusPath); } catch { /* ignore */ }
+
+  const batchFailed = selection.eligible.filter((file) => context.failedFiles.has(file.filePath)).length;
+  return {
+    failed: batchFailed,
+    succeeded: selection.eligible.length - batchFailed,
+    skippedPrereq: selection.skippedPrereq,
+    missingRequested: selection.missingRequested,
+    requestedCount: selection.requestedCount,
+  };
 }
 
 async function runSequentialPipelineBatch(
@@ -578,10 +705,13 @@ export interface RuntimeReindexOptions {
   rootDir: string;
   provider?: AtlasProvider;
   concurrency: number;
+  phase?: 'full' | 'pass2';
+  files?: string[];
 }
 
 export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise<FullPipelineResult> {
   const { db, workspace, rootDir, provider, concurrency } = options;
+  const phase = options.phase ?? 'full';
 
   const pass0 = await runPass0(rootDir, workspace, db);
 
@@ -601,6 +731,20 @@ export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise
     force: false,
   };
 
+  if (phase === 'pass2') {
+    const result = await runPass2OnlyBatch('reindex/pass2', pass0.files, context, options.files);
+    rebuildFts(db);
+    return {
+      workspace,
+      rootDir,
+      filesProcessed: result.succeeded + result.failed,
+      filesFailed: result.failed,
+      filesSkipped: result.skippedPrereq,
+      filesMissing: result.missingRequested,
+      phase,
+    };
+  }
+
   const result = await runSequentialPipelineBatch('reindex', pass0.files, context);
   rebuildFts(db);
 
@@ -609,6 +753,7 @@ export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise
     rootDir,
     filesProcessed: pass0.files.length,
     filesFailed: result.failed,
+    phase,
   };
 }
 
@@ -677,6 +822,41 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
 
     const pass0 = await runPass0(rootDir, workspace, db, { force: config.force });
     console.log(`[atlas-init] pass0: ${pass0.files.length} files, ${pass0.importEdges.length} edges`);
+
+    if (config.phase === 'pass2') {
+      console.log('[atlas-init] mode: pass2-only rerun');
+      const atlasRecords = new Map(
+        listAtlasFiles(db, workspace).map((record) => [record.file_path, record] as const),
+      );
+      const pass2Context: BatchPipelineContext = {
+        db,
+        workspace,
+        rootDir,
+        concurrency: config.concurrency,
+        provider,
+        atlasRecords,
+        failedFiles: new Set<string>(),
+        cancelled,
+        force: false,
+      };
+      activeContext = pass2Context;
+
+      const pass2Result = await runPass2OnlyBatch('pass2-only', pass0.files, pass2Context, config.files);
+      console.log(
+        `[atlas-init] pass2-only complete: ${pass2Result.succeeded} succeeded, ${pass2Result.failed} failed, `
+        + `${pass2Result.skippedPrereq} skipped prerequisites, ${pass2Result.missingRequested} missing requested`,
+      );
+      rebuildFts(db);
+      return {
+        workspace,
+        rootDir,
+        filesProcessed: pass2Result.succeeded + pass2Result.failed,
+        filesFailed: pass2Result.failed,
+        filesSkipped: pass2Result.skippedPrereq,
+        filesMissing: pass2Result.missingRequested,
+        phase: 'pass2',
+      };
+    }
 
     const costProfile = resolveCostProfile(config);
     const costEstimate = estimateInitCost(pass0.files.length, costProfile);

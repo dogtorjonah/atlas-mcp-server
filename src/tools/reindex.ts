@@ -1,14 +1,37 @@
-import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
-import { enqueueReextract, listAtlasFiles, resetAtlasDatabase } from '../db.js';
+import { enqueueReextract, listAtlasFiles } from '../db.js';
 import { notifyAtlasContextUpdated } from '../resources/context.js';
 import { estimateInitCost, formatUsd, resolveCostProfile, runRuntimeReindex } from '../pipeline/index.js';
 
 const activeReindexes = new Map<string, Promise<void>>();
 const reindexStartedAt = new Map<string, Date>();
 const reindexFileCount = new Map<string, number>();
+const reindexMode = new Map<string, 'full' | 'pass2'>();
+
+function buildPercentBar(percent: number, width = 18): string {
+  const normalized = Math.max(0, Math.min(percent, 100));
+  const filled = Math.round((normalized / 100) * width);
+  return `${'█'.repeat(filled)}${'░'.repeat(Math.max(width - filled, 0))}`;
+}
+
+function readStatus(sourceRoot: string): null | {
+  currentPhase: string;
+  phases: Record<string, { total?: number; completed?: number; failed?: number; done?: boolean }>;
+} {
+  try {
+    const raw = fs.readFileSync(path.join(sourceRoot, '.atlas', 'status.json'), 'utf8');
+    return JSON.parse(raw) as {
+      currentPhase: string;
+      phases: Record<string, { total?: number; completed?: number; failed?: number; done?: boolean }>;
+    };
+  } catch {
+    return null;
+  }
+}
 
 export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): void {
   server.tool(
@@ -17,13 +40,13 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
       files: z.array(z.string().min(1)).optional(),
       workspace: z.string().optional(),
       confirm: z.boolean().optional(),
-      force: z.boolean().optional(),
+      phase: z.enum(['pass2']).optional(),
     },
-    async ({ files, workspace, confirm, force }: {
+    async ({ files, workspace, confirm, phase }: {
       files?: string[];
       workspace?: string;
       confirm?: boolean;
-      force?: boolean;
+      phase?: 'pass2';
     }) => {
       if (!runtime.provider) {
         return {
@@ -35,13 +58,13 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
       }
 
       const activeWorkspace = workspace ?? runtime.config.workspace;
+      const requestedPhase = phase ?? 'full';
+      const uniqueFiles = files ? [...new Set(files.map((f) => f.trim()).filter(Boolean))] : [];
 
       // ── Mode: flush specific files ──
-      if (files && files.length > 0) {
-        const uniqueFiles = [...new Set(files.map((f) => f.trim()).filter(Boolean))];
-        const triggerReason = force ? 'flush_force' : 'flush';
+      if (uniqueFiles.length > 0 && requestedPhase === 'full') {
         for (const filePath of uniqueFiles) {
-          enqueueReextract(runtime.db, activeWorkspace, filePath, triggerReason);
+          enqueueReextract(runtime.db, activeWorkspace, filePath, 'flush');
         }
         await notifyAtlasContextUpdated(runtime.server);
         return {
@@ -53,7 +76,13 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
       }
 
       // ── Mode: dry-run / status ──
-      const fileCount = listAtlasFiles(runtime.db, activeWorkspace).length;
+      const atlasFiles = listAtlasFiles(runtime.db, activeWorkspace);
+      const fileCount = atlasFiles.length;
+      const pass2RequestedRows = uniqueFiles.length > 0
+        ? atlasFiles.filter((file) => uniqueFiles.includes(file.file_path))
+        : atlasFiles;
+      const pass2TargetCount = pass2RequestedRows.filter((file) => file.purpose.trim() !== '' && file.extraction_model !== 'scaffold').length;
+      const pass2MissingCount = uniqueFiles.length > 0 ? Math.max(uniqueFiles.length - pass2RequestedRows.length, 0) : 0;
       const profile = resolveCostProfile(runtime.config);
       const estimate = estimateInitCost(fileCount, profile);
 
@@ -61,11 +90,58 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
         const startedAt = reindexStartedAt.get(activeWorkspace);
         if (activeReindexes.has(activeWorkspace) && startedAt) {
           const elapsed = Math.round((Date.now() - startedAt.getTime()) / 1000);
+          const status = readStatus(runtime.config.sourceRoot);
+          const activeMode = reindexMode.get(activeWorkspace) ?? 'full';
+          if (status) {
+            const phaseOrder = ['pass 0.5', 'pass 1', 'embed', 'pass 2'];
+            const phaseLabels: Record<string, string> = {
+              'pass 0.5': 'Blurbs',
+              'pass 1': 'Extraction',
+              embed: 'Vectorize',
+              'pass 2': 'Cross-refs',
+            };
+            const normalized = phaseOrder.map((key) => {
+              const phase = status.phases[key];
+              const total = Math.max(0, Number(phase?.total ?? 0));
+              const completed = Math.max(0, Number(phase?.completed ?? 0));
+              const failed = Math.max(0, Number(phase?.failed ?? 0));
+              const processed = Math.min(total, completed + failed);
+              const done = Boolean(phase?.done) || (total > 0 && processed >= total);
+              return { key, total, processed, done };
+            });
+            const current = normalized.find((phase) => phase.key === status.currentPhase);
+            const phaseUnits = normalized.reduce((sum, phase) => {
+              if (phase.done) return sum + 1;
+              if (phase.key === status.currentPhase && phase.total > 0) {
+                return sum + (phase.processed / phase.total);
+              }
+              return sum;
+            }, 0);
+            const overallPercent = activeMode === 'pass2'
+              ? Number((((current?.processed ?? 0) / Math.max(current?.total ?? 0, 1)) * 100).toFixed(1))
+              : Number(((phaseUnits / phaseOrder.length) * 100).toFixed(1));
+            const currentLabel = phaseLabels[status.currentPhase] ?? status.currentPhase;
+            const currentPercent = current && current.total > 0
+              ? `${((current.processed / current.total) * 100).toFixed(1)}%`
+              : '—';
+            return {
+              content: [{
+                type: 'text',
+                text: [
+                  `${activeMode === 'pass2' ? 'Pass 2 rerun' : 'Reindex'} in progress: ${buildPercentBar(overallPercent)} ${overallPercent}%, running for ${elapsed}s`,
+                  `Phase: ${currentLabel} (${current?.processed ?? 0}/${current?.total ?? 0}, ${currentPercent})`,
+                  `Target files in current phase: ${current?.total ?? reindexFileCount.get(activeWorkspace) ?? '?'}`,
+                  `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
+                  `Atlas context will update when complete.`,
+                ].join('\n'),
+              }],
+            };
+          }
           return {
             content: [{
               type: 'text',
               text: [
-                `Reindex in progress: ${reindexFileCount.get(activeWorkspace) ?? '?'} files, running for ${elapsed}s`,
+                `${activeMode === 'pass2' ? 'Pass 2 rerun' : 'Reindex'} in progress: ${reindexFileCount.get(activeWorkspace) ?? '?'} files, running for ${elapsed}s`,
                 `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
                 `Atlas context will update when complete.`,
               ].join('\n'),
@@ -76,14 +152,27 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
           content: [{
             type: 'text',
             text: [
-              `atlas_reindex dry-run: ${fileCount} files (~${estimate.totalCalls} API calls)`,
+              requestedPhase === 'pass2'
+                ? `atlas_reindex dry-run (phase=pass2): ${pass2TargetCount} eligible file${pass2TargetCount === 1 ? '' : 's'}`
+                : `atlas_reindex dry-run: ${fileCount} files (~${estimate.totalCalls} API calls)`,
               `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
-              `Estimated cost: ~${formatUsd(estimate.estimatedUsd)}`,
-              `Mode: ${force ? 'FORCE (delete existing SQLite database and rebuild from scratch)' : 'resume-safe (skip completed files)'}`,
+              requestedPhase === 'pass2'
+                ? 'Mode: pass2-only rerun (cross-refs only, preserves existing extraction fields)'
+                : `Estimated cost: ~${formatUsd(estimate.estimatedUsd)}`,
+              requestedPhase === 'pass2'
+                ? `Requested files: ${uniqueFiles.length > 0 ? uniqueFiles.length : 'all eligible files'}`
+                : 'Mode: resume-safe (skip completed files)',
+              requestedPhase === 'pass2' && pass2MissingCount > 0
+                ? `Missing requested files: ${pass2MissingCount}`
+                : '',
               ``,
-              `Call atlas_reindex with confirm=true to proceed.`,
-              `Pass files=["path/to/file.ts"] to re-extract specific files instead.`,
-            ].join('\n'),
+              requestedPhase === 'pass2'
+                ? 'Call atlas_reindex with confirm=true and phase="pass2" to rerun cross-refs only.'
+                : 'Call atlas_reindex with confirm=true to proceed.',
+              requestedPhase === 'pass2'
+                ? 'Pass files=["path/to/file.ts"] with phase="pass2" to limit the rerun.'
+                : 'Pass files=["path/to/file.ts"] to re-extract specific files instead.',
+            ].filter(Boolean).join('\n'),
           }],
         };
       }
@@ -95,17 +184,9 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
         };
       }
 
-      const modeLabel = force ? 'force rebuild' : 'resume-safe';
       reindexStartedAt.set(activeWorkspace, new Date());
-      reindexFileCount.set(activeWorkspace, fileCount);
-
-      if (force) {
-        runtime.db = resetAtlasDatabase({
-          dbPath: runtime.config.dbPath,
-          migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
-          sqliteVecExtension: runtime.config.sqliteVecExtension,
-        }, runtime.db);
-      }
+      reindexFileCount.set(activeWorkspace, requestedPhase === 'pass2' ? pass2TargetCount : fileCount);
+      reindexMode.set(activeWorkspace, requestedPhase);
 
       activeReindexes.set(activeWorkspace, runRuntimeReindex({
         db: runtime.db,
@@ -113,6 +194,8 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
         rootDir: runtime.config.sourceRoot,
         provider: runtime.provider,
         concurrency: runtime.config.concurrency,
+        phase: requestedPhase,
+        files: uniqueFiles.length > 0 ? uniqueFiles : undefined,
       }).then((result) => {
         console.log(`[atlas-reindex] complete: ${result.filesProcessed - result.filesFailed} succeeded, ${result.filesFailed} failed`);
         notifyAtlasContextUpdated(runtime.server).catch(() => {});
@@ -122,15 +205,21 @@ export function registerReindexTool(server: McpServer, runtime: AtlasRuntime): v
         activeReindexes.delete(activeWorkspace);
         reindexStartedAt.delete(activeWorkspace);
         reindexFileCount.delete(activeWorkspace);
+        reindexMode.delete(activeWorkspace);
       }));
 
       return {
         content: [{
           type: 'text',
           text: [
-            `Reindex started in background (${modeLabel}): ${fileCount} files (~${estimate.totalCalls} API calls)`,
+            requestedPhase === 'pass2'
+              ? `Pass 2 rerun started in background: ${pass2TargetCount} eligible file${pass2TargetCount === 1 ? '' : 's'}`
+              : `Reindex started in background (resume-safe): ${fileCount} indexed rows (~${estimate.totalCalls} API calls)`,
             `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
-            `Estimated cost: ~${formatUsd(estimate.estimatedUsd)}`,
+            requestedPhase === 'pass2'
+              ? 'Mode: pass2-only rerun (cross-refs only)'
+              : `Estimated cost: ~${formatUsd(estimate.estimatedUsd)}`,
+            `Run atlas_reindex again for live file counts and % progress.`,
             `Atlas context will update when complete.`,
           ].join('\n'),
         }],

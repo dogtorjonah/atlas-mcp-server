@@ -4,8 +4,56 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
+import type { AtlasDatabase } from '../db.js';
 import { getAtlasFile, listImports, listImportedBy } from '../db.js';
 import { trackQuery } from '../queryLog.js';
+
+interface ChangelogRow {
+  id: number;
+  summary: string;
+  patterns_added: string;
+  hazards_added: string;
+  author_instance_id: string | null;
+  author_engine: string | null;
+  verification_status: string;
+  created_at: string;
+}
+
+function getRecentChangelog(db: AtlasDatabase, workspace: string, filePath: string, limit = 5): ChangelogRow[] {
+  try {
+    const rows = db.prepare(
+      `SELECT id, summary, patterns_added, hazards_added, author_instance_id, author_engine,
+              verification_status, created_at
+       FROM atlas_changelog
+       WHERE workspace = ? AND file_path = ?
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    ).all(workspace, filePath, limit) as ChangelogRow[];
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
+function formatChangelogRow(row: ChangelogRow, index: number): string {
+  const ts = row.created_at ? new Date(row.created_at).toLocaleString() : 'unknown';
+  const verified = row.verification_status === 'confirmed' ? '✅' : row.verification_status === 'pending' ? '⏳' : '❌';
+  let lines = `  ${index + 1}. ${row.summary} ${verified}`;
+  lines += `\n     Author: ${row.author_instance_id ?? 'unknown'} | ${row.author_engine ?? '?'} | ${ts}`;
+
+  try {
+    const patterns = JSON.parse(row.patterns_added) as string[];
+    if (patterns.length > 0) {
+      lines += `\n     Patterns added: ${patterns.join(', ')}`;
+    }
+    const hazards = JSON.parse(row.hazards_added) as string[];
+    if (hazards.length > 0) {
+      lines += `\n     Hazards added: ${hazards.join(', ')}`;
+    }
+  } catch { /* ignore parse errors */ }
+
+  return lines;
+}
 
 async function currentFileHash(sourceRoot: string, filePath: string): Promise<string | null> {
   try {
@@ -48,6 +96,18 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
       const lines: string[] = [];
       lines.push(`# ${row.file_path}`);
       if (stale) lines.push(stale);
+
+      // ── Recent Changes (atlas_changelog consumer) ──
+      const recentChanges = getRecentChangelog(runtime.db, ws, filePath, 5);
+      if (recentChanges.length > 0) {
+        lines.push('');
+        lines.push(`## Recent Changes`);
+        lines.push('These entries were written by agents after editing this file — capturing the "why" behind recent changes:');
+        recentChanges.forEach((entry, i) => {
+          lines.push(formatChangelogRow(entry, i));
+        });
+      }
+
       if (row.cluster) lines.push(`Cluster: ${row.cluster}`);
       lines.push('');
       lines.push(`## Purpose`);

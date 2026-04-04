@@ -4,7 +4,14 @@
   "type": "module",
   "description": "Standalone MCP server for the Voxxo codebase atlas.",
   "license": "MIT",
-  "main": "dist/server.js",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./db": "./dist/db.js",
+    "./types": "./dist/types.js",
+    "./paths": "./dist/paths.js",
+    "./pipeline": "./dist/pipeline/index.js"
+  },
   "bin": {
     "atlas-mcp": "./dist/server.js"
   },

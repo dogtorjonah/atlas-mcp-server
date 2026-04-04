@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 import Database from 'better-sqlite3';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
-import type { AtlasDatabase } from '../db.js';
+import { prepareFtsQuery, searchAtlasFiles, searchFts, type AtlasDatabase } from '../db.js';
 
 const require = createRequire(import.meta.url);
 
@@ -53,8 +53,8 @@ function loadSqliteVec(db: AtlasDatabase): void {
     if (typeof sv.getLoadablePath === 'function') {
       db.loadExtension(sv.getLoadablePath());
     }
-  } catch {
-    // sqlite-vec not available
+  } catch (err) {
+    console.warn('[atlas-bridge] sqlite-vec extension not available:', err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -126,80 +126,36 @@ function discoverWorkspaces(currentSourceRoot: string): BridgeDb[] {
 // Query helpers
 // ---------------------------------------------------------------------------
 
-function hasTable(db: AtlasDatabase, tableName: string): boolean {
-  try {
-    const row = db.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ? LIMIT 1').get('table', tableName) as { name?: string } | undefined;
-    return Boolean(row?.name);
-  } catch {
-    return false;
-  }
-}
-
-function normalizeSearchText(value: string): string {
-  return value
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 function parseJsonArray(value: unknown): string[] {
   if (typeof value !== 'string' || !value) return [];
   try { return JSON.parse(value); } catch { return []; }
 }
 
 function searchFtsInDb(db: AtlasDatabase, workspace: string, query: string, limit: number): BridgeSearchResult[] {
-  if (!hasTable(db, 'atlas_fts')) return [];
-  try {
-    const rows = db.prepare(
-      `SELECT f.file_path, f.cluster, f.loc, f.purpose, f.patterns, f.hazards
-       FROM atlas_fts
-       JOIN atlas_files AS f ON f.id = atlas_fts.rowid
-       WHERE f.workspace = ?
-         AND atlas_fts MATCH ?
-       ORDER BY bm25(atlas_fts)
-       LIMIT ?`,
-    ).all(workspace, normalizeSearchText(query), limit) as Array<Record<string, unknown>>;
-    return rows.map((row, index) => ({
-      workspace,
-      file_path: String(row.file_path ?? ''),
-      cluster: String(row.cluster ?? ''),
-      loc: Number(row.loc ?? 0),
-      purpose: String(row.purpose ?? ''),
-      patterns: parseJsonArray(row.patterns),
-      hazards: parseJsonArray(row.hazards),
-      score: 1 / (index + 1),
-    }));
-  } catch {
-    return [];
-  }
+  if (!prepareFtsQuery(query)) return [];
+  return searchFts(db, workspace, query, limit).map((hit) => ({
+    workspace,
+    file_path: hit.file.file_path,
+    cluster: hit.file.cluster ?? '',
+    loc: hit.file.loc,
+    purpose: hit.file.purpose,
+    patterns: hit.file.patterns,
+    hazards: hit.file.hazards,
+    score: hit.score,
+  }));
 }
 
 function searchFallbackInDb(db: AtlasDatabase, workspace: string, query: string, limit: number): BridgeSearchResult[] {
-  const like = `%${query}%`;
-  try {
-    const rows = db.prepare(
-      `SELECT file_path, cluster, loc, purpose, patterns, hazards
-       FROM atlas_files
-       WHERE workspace = ?
-         AND (file_path LIKE ? OR purpose LIKE ? OR patterns LIKE ? OR hazards LIKE ?)
-       ORDER BY file_path ASC
-       LIMIT ?`,
-    ).all(workspace, like, like, like, like, limit) as Array<Record<string, unknown>>;
-    return rows.map((row, index) => ({
-      workspace,
-      file_path: String(row.file_path ?? ''),
-      cluster: String(row.cluster ?? ''),
-      loc: Number(row.loc ?? 0),
-      purpose: String(row.purpose ?? ''),
-      patterns: parseJsonArray(row.patterns),
-      hazards: parseJsonArray(row.hazards),
-      score: 1 / (index + 1),
-    }));
-  } catch {
-    return [];
-  }
+  return searchAtlasFiles(db, workspace, query, limit).map((row, index) => ({
+    workspace,
+    file_path: row.file_path,
+    cluster: row.cluster ?? '',
+    loc: row.loc,
+    purpose: row.purpose,
+    patterns: row.patterns,
+    hazards: row.hazards,
+    score: 1 / (index + 1),
+  }));
 }
 
 function getFileCount(db: AtlasDatabase, workspace: string): number {

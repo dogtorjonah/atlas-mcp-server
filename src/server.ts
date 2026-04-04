@@ -14,7 +14,11 @@ import { startAtlasWatcher } from './watcher.js';
 import { registerLookupTool } from './tools/lookup.js';
 import { registerReindexTool } from './tools/reindex.js';
 import { registerSearchTool } from './tools/search.js';
+import { registerClusterTool } from './tools/cluster.js';
+import { registerPatternsTool } from './tools/patterns.js';
 import { registerBridgeTools } from './tools/bridge.js';
+import { registerChangelogTools } from './tools/changelog.js';
+import { registerCommitTool } from './tools/commit.js';
 import { ATLAS_CONTEXT_RESOURCE_URI, generateContextResource } from './resources/context.js';
 import type { AtlasRuntime, AtlasServerConfig } from './types.js';
 
@@ -40,40 +44,78 @@ function parseInitArgs(argv: string[]): {
   skipCostConfirmation: boolean;
   useWizard: boolean;
   force: boolean;
+  phase?: 'pass2';
+  files: string[];
 } {
-  const skipCostConfirmation = argv.includes('--yes');
-  const force = argv.includes('--force');
-  const useWizard = argv.includes('--wizard') || (!skipCostConfirmation && argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY);
-  const filtered = argv.filter((arg) => arg !== '--yes' && arg !== '--wizard' && arg !== '--force');
-  const targetIndex = filtered.findIndex((arg) => !arg.startsWith('--'));
+  const configArgs: string[] = [];
+  const files: string[] = [];
+  let skipCostConfirmation = false;
+  let force = false;
+  let wizardRequested = false;
+  let phase: 'pass2' | undefined;
+  let targetRoot = process.cwd();
+  let targetAssigned = false;
 
-  if (targetIndex < 0) {
-    return {
-      targetRoot: process.cwd(),
-      configArgs: filtered,
-      skipCostConfirmation,
-      useWizard,
-      force,
-    };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!arg) continue;
+
+    if (arg === '--yes') {
+      skipCostConfirmation = true;
+      continue;
+    }
+    if (arg === '--wizard') {
+      wizardRequested = true;
+      continue;
+    }
+    if (arg === '--force') {
+      force = true;
+      continue;
+    }
+    if (arg === '--phase') {
+      const value = argv[index + 1];
+      if (value === 'pass2') {
+        phase = 'pass2';
+      }
+      if (value) {
+        index += 1;
+      }
+      continue;
+    }
+    if (arg === '--file') {
+      const value = argv[index + 1];
+      if (value) {
+        files.push(value);
+        index += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith('--')) {
+      configArgs.push(arg);
+      const value = argv[index + 1];
+      if (value && !value.startsWith('--')) {
+        configArgs.push(value);
+        index += 1;
+      }
+      continue;
+    }
+    if (!targetAssigned) {
+      targetRoot = path.resolve(arg);
+      targetAssigned = true;
+      continue;
+    }
+    configArgs.push(arg);
   }
 
-  const targetArg = filtered[targetIndex];
-  if (!targetArg) {
-    return {
-      targetRoot: process.cwd(),
-      configArgs: filtered,
-      skipCostConfirmation,
-      useWizard,
-      force,
-    };
-  }
-
+  const useWizard = wizardRequested || (!skipCostConfirmation && argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY);
   return {
-    targetRoot: path.resolve(targetArg!),
-    configArgs: filtered.filter((_, index) => index !== targetIndex),
+    targetRoot,
+    configArgs,
     skipCostConfirmation,
     useWizard,
     force,
+    phase,
+    files,
   };
 }
 
@@ -192,6 +234,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
       skipCostConfirmation: initArgs?.skipCostConfirmation ?? false,
       force: initArgs?.force ?? false,
+      phase: initArgs?.phase,
+      files: initArgs?.files,
     });
     return;
   }
@@ -230,6 +274,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   registerSearchTool(server, runtime);
   registerLookupTool(server, runtime);
+  registerClusterTool(server, runtime);
+  registerPatternsTool(server, runtime);
+  registerChangelogTools(server, runtime);
+  registerCommitTool(server, runtime);
   registerReindexTool(server, runtime);
   registerBridgeTools(server, runtime);
 

@@ -236,6 +236,14 @@ function runGrep(symbolName: string, sourceRoot: string, definingFile: string, c
       '-C',
       String(contextLines),
       '--glob',
+      '**/*.ts',
+      '--glob',
+      '**/*.tsx',
+      '--glob',
+      '**/*.mts',
+      '--glob',
+      '**/*.cts',
+      '--glob',
       '!**/node_modules/**',
       '--glob',
       '!**/dist/**',
@@ -245,13 +253,23 @@ function runGrep(symbolName: string, sourceRoot: string, definingFile: string, c
       '!**/*.d.ts',
       '--glob',
       '!**/.next/**',
+      '--glob',
+      '!**/docs/**',
+      '--glob',
+      '!**/*.md',
+      '--glob',
+      '!**/*.json',
+      '--glob',
+      '!**/.atlas/**',
+      '--glob',
+      '!**/relay/scripts/codebase-atlas/**',
       symbolName,
       '.',
     ], {
       cwd: sourceRoot,
       encoding: 'utf8',
-      maxBuffer: 1024 * 1024,
-      timeout: 15000,
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 60000,
     });
 
     const groups = new Map<string, GrepMatchGroup>();
@@ -297,6 +315,13 @@ function runGrep(symbolName: string, sourceRoot: string, definingFile: string, c
     if (code === 1) {
       return [];
     }
+    const syscall = typeof error === 'object' && error && 'syscall' in error ? (error as { syscall?: string }).syscall : undefined;
+    const signal = typeof error === 'object' && error && 'signal' in error ? (error as { signal?: string }).signal : undefined;
+    const errCode = typeof error === 'object' && error && 'code' in error ? (error as { code?: string }).code : undefined;
+    console.warn(
+      `[atlas-pass2] rg lookup failed for symbol="${symbolName}" file="${definingFile}" `
+      + `(status=${String(code ?? 'n/a')} code=${String(errCode ?? 'n/a')} signal=${String(signal ?? 'n/a')} syscall=${String(syscall ?? 'n/a')})`,
+    );
     return [];
   }
 }
@@ -311,8 +336,15 @@ function coerceCrossRefSymbol(
   const fallbackCallSites = buildFallbackCallSites(symbolName, groups, maxGrepHits);
   const providerCallSites = providerResult?.call_sites?.filter((site) => typeof site.file === 'string' && typeof site.usage_type === 'string' && typeof site.context === 'string' && typeof site.count === 'number') ?? [];
   const callSites = providerCallSites.length > 0 ? providerCallSites : fallbackCallSites;
-  const totalUsages = providerResult?.total_usages ?? callSites.reduce((sum, site) => sum + site.count, 0);
-  const blastRadius = providerResult?.blast_radius ?? evaluateBlastRadius(totalUsages, callSites.length);
+  // Only trust provider totals/radius when provider contributed real usage signal.
+  const providerHasUsageSignal = providerCallSites.length > 0 || (providerResult?.total_usages ?? 0) > 0;
+  const derivedUsages = callSites.reduce((sum, site) => sum + site.count, 0);
+  const totalUsages = providerHasUsageSignal
+    ? (providerResult?.total_usages ?? derivedUsages)
+    : derivedUsages;
+  const blastRadius = providerHasUsageSignal
+    ? (providerResult?.blast_radius ?? evaluateBlastRadius(totalUsages, callSites.length))
+    : evaluateBlastRadius(totalUsages, callSites.length);
 
   return {
     type: providerResult?.type ?? symbolType,

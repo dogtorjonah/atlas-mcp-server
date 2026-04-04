@@ -22,12 +22,77 @@ export interface AtlasDatabase {
   pragma(sql: string): unknown;
   exec(sql: string): unknown;
   loadExtension(extensionPath: string): unknown;
-  transaction<F extends (...args: any[]) => unknown>(fn: F): F;
+  transaction<F extends (...args: any[]) => unknown>(fn: F): any;
   close(): void;
 }
 
 export interface AtlasSearchHit {
   file: AtlasFileRecord;
+  rank: number;
+  score: number;
+  source: 'fts' | 'vector';
+}
+
+export interface AtlasExportRow {
+  file: AtlasFileRecord;
+  embedding: number[] | null;
+}
+
+export interface AtlasChangelogRecord {
+  id: number;
+  workspace: string;
+  file_path: string;
+  summary: string;
+  patterns_added: string[];
+  patterns_removed: string[];
+  hazards_added: string[];
+  hazards_removed: string[];
+  cluster: string | null;
+  breaking_changes: boolean;
+  commit_sha: string | null;
+  author_instance_id: string | null;
+  author_engine: string | null;
+  review_entry_id: string | null;
+  source: string;
+  verification_status: string;
+  verification_notes: string | null;
+  created_at: string;
+}
+
+export interface AtlasChangelogInsertInput {
+  workspace: string;
+  file_path: string;
+  summary: string;
+  patterns_added?: string[];
+  patterns_removed?: string[];
+  hazards_added?: string[];
+  hazards_removed?: string[];
+  cluster?: string | null;
+  breaking_changes?: boolean;
+  commit_sha?: string | null;
+  author_instance_id?: string | null;
+  author_engine?: string | null;
+  review_entry_id?: string | null;
+  source?: string;
+  verification_status?: string;
+  verification_notes?: string | null;
+}
+
+export interface AtlasChangelogQuery {
+  workspace: string;
+  file?: string;
+  file_prefix?: string;
+  query?: string;
+  cluster?: string;
+  since?: string;
+  until?: string;
+  verification_status?: string;
+  breaking_only?: boolean;
+  limit?: number;
+}
+
+export interface AtlasChangelogSearchHit {
+  record: AtlasChangelogRecord;
   rank: number;
   score: number;
   source: 'fts' | 'vector';
@@ -113,28 +178,26 @@ function loadSqliteVec(db: AtlasDatabase, extensionPath?: string): boolean {
   }
 }
 
-/**
- * Verify the atlas_embeddings vec0 table is functional.
- * If it was created without the extension loaded it will exist as a broken
- * shell that silently rejects writes. Drop and recreate it in that case.
- */
-function healVec0Table(db: AtlasDatabase): void {
+function healVec0Table(
+  db: AtlasDatabase,
+  tableName: 'atlas_embeddings' | 'atlas_changelog_embeddings',
+  idColumn: 'file_id' | 'changelog_id',
+): void {
   try {
     // Probe with a real insert + immediate delete.
     // vec0 v0.1.x requires integer primary keys as SQL literals, not bound params.
-    db.prepare(
-      'INSERT INTO atlas_embeddings (file_id, embedding) VALUES (-1, ?)',
-    ).run(JSON.stringify(new Array(1536).fill(0)));
-    db.prepare('DELETE FROM atlas_embeddings WHERE file_id = -1').run();
+    db.prepare(`INSERT INTO ${tableName} (${idColumn}, embedding) VALUES (-1, ?)`)
+      .run(JSON.stringify(new Array(1536).fill(0)));
+    db.prepare(`DELETE FROM ${tableName} WHERE ${idColumn} = -1`).run();
   } catch {
     // Probe failed — table is broken. Recreate it.
-    console.warn('[atlas] atlas_embeddings vec0 table is non-functional — recreating');
+    console.warn(`[atlas] ${tableName} vec0 table is non-functional — recreating`);
     try {
-      db.exec('DROP TABLE IF EXISTS atlas_embeddings');
-      db.exec('CREATE VIRTUAL TABLE atlas_embeddings USING vec0(file_id INTEGER PRIMARY KEY, embedding float[1536])');
-      console.log('[atlas] atlas_embeddings vec0 table recreated successfully');
+      db.exec(`DROP TABLE IF EXISTS ${tableName}`);
+      db.exec(`CREATE VIRTUAL TABLE ${tableName} USING vec0(${idColumn} INTEGER PRIMARY KEY, embedding float[1536])`);
+      console.log(`[atlas] ${tableName} vec0 table recreated successfully`);
     } catch (err) {
-      console.warn(`[atlas] Failed to recreate vec0 table: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`[atlas] Failed to recreate ${tableName}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
@@ -167,7 +230,8 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
 
   // If the extension loaded, verify the vec0 table is functional and heal if needed
   if (vecLoaded) {
-    healVec0Table(db);
+    healVec0Table(db, 'atlas_embeddings', 'file_id');
+    healVec0Table(db, 'atlas_changelog_embeddings', 'changelog_id');
   }
 
   return db;
@@ -211,6 +275,33 @@ function parseJson<T>(value: unknown, fallback: T): T {
   }
 }
 
+function parseEmbeddingValue(value: unknown): number[] | null {
+  if (value == null) return null;
+
+  if (Array.isArray(value)) {
+    return value.every((entry) => typeof entry === 'number') ? value as number[] : null;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) && parsed.every((entry) => typeof entry === 'number')
+        ? parsed as number[]
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return parseEmbeddingValue(value.toString('utf8'));
+  }
+
+  return null;
+}
+
 function stringifyFtsValue(value: unknown): string {
   if (value == null) {
     return '';
@@ -221,6 +312,19 @@ function stringifyFtsValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
+// Common English stopwords that poison FTS5 implicit-AND queries
+const FTS_STOPWORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+  'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'be',
+  'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+  'would', 'could', 'should', 'may', 'might', 'shall', 'can', 'need',
+  'it', 'its', 'this', 'that', 'these', 'those', 'i', 'me', 'my', 'we',
+  'our', 'you', 'your', 'he', 'she', 'they', 'them', 'their', 'who',
+  'which', 'what', 'where', 'when', 'how', 'why', 'if', 'then', 'so',
+  'no', 'not', 'all', 'each', 'every', 'any', 'some', 'such', 'only',
+  'about', 'up', 'out', 'just', 'into', 'also', 'than', 'very', 'too',
+]);
+
 function normalizeSearchText(value: string): string {
   return value
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -228,6 +332,21 @@ function normalizeSearchText(value: string): string {
     .replace(/[_-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Prepare a user query for FTS5 MATCH.
+ * Strips punctuation, removes stopwords, uses OR semantics for NL queries.
+ */
+export function prepareFtsQuery(raw: string): string {
+  const normalized = normalizeSearchText(raw);
+  const cleaned = normalized.replace(/[?!@#$%^&*(){}[\]<>:;"'`,.|\\~/+=]/g, ' ');
+  const tokens = cleaned
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length > 1 && !FTS_STOPWORDS.has(t));
+  if (tokens.length === 0) return '';
+  return tokens.join(' OR ');
 }
 
 function ftsDocumentForRecord(record: AtlasFileRecord): Record<string, string> {
@@ -291,6 +410,29 @@ export function mapMetaRecord(row: Record<string, unknown>): AtlasMetaRecord {
   };
 }
 
+export function mapChangelogRecord(row: Record<string, unknown>): AtlasChangelogRecord {
+  return {
+    id: Number(row.id ?? 0),
+    workspace: String(row.workspace ?? ''),
+    file_path: String(row.file_path ?? ''),
+    summary: String(row.summary ?? ''),
+    patterns_added: parseJson<string[]>(row.patterns_added, []),
+    patterns_removed: parseJson<string[]>(row.patterns_removed, []),
+    hazards_added: parseJson<string[]>(row.hazards_added, []),
+    hazards_removed: parseJson<string[]>(row.hazards_removed, []),
+    cluster: row.cluster == null ? null : String(row.cluster),
+    breaking_changes: Number(row.breaking_changes ?? 0) !== 0,
+    commit_sha: row.commit_sha == null ? null : String(row.commit_sha),
+    author_instance_id: row.author_instance_id == null ? null : String(row.author_instance_id),
+    author_engine: row.author_engine == null ? null : String(row.author_engine),
+    review_entry_id: row.review_entry_id == null ? null : String(row.review_entry_id),
+    source: String(row.source ?? 'agent'),
+    verification_status: String(row.verification_status ?? 'pending'),
+    verification_notes: row.verification_notes == null ? null : String(row.verification_notes),
+    created_at: String(row.created_at ?? ''),
+  };
+}
+
 export function getAtlasFile(db: AtlasDatabase, workspace: string, filePath: string): AtlasFileRecord | null {
   const row = db.prepare(
     'SELECT * FROM atlas_files WHERE workspace = ? AND file_path = ? LIMIT 1',
@@ -299,61 +441,145 @@ export function getAtlasFile(db: AtlasDatabase, workspace: string, filePath: str
 }
 
 export function searchAtlasFiles(db: AtlasDatabase, workspace: string, query: string, limit = 5): AtlasFileRecord[] {
-  const like = `%${query}%`;
+  // Split into meaningful tokens with stopword removal (OR semantics across tokens)
+  const tokens = normalizeSearchText(query)
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length > 1 && !FTS_STOPWORDS.has(t));
+  if (tokens.length === 0) return [];
+
+  const conditions = tokens.map(
+    () => '(file_path LIKE ? OR blurb LIKE ? OR purpose LIKE ? OR exports LIKE ? OR patterns LIKE ? OR hazards LIKE ?)',
+  );
+  const whereClause = conditions.join(' OR ');
+  const params: (string | number)[] = [workspace];
+  for (const token of tokens) {
+    const like = `%${token}%`;
+    params.push(like, like, like, like, like, like);
+  }
+  params.push(limit);
+
   const rows = db.prepare(
     `SELECT * FROM atlas_files
      WHERE workspace = ?
-       AND (
-         file_path LIKE ?
-         OR blurb LIKE ?
-         OR purpose LIKE ?
-         OR exports LIKE ?
-         OR patterns LIKE ?
-         OR hazards LIKE ?
-       )
+       AND (${whereClause})
      ORDER BY updated_at DESC, file_path ASC
      LIMIT ?`,
-  ).all(workspace, like, like, like, like, like, like, limit) as Record<string, unknown>[];
+  ).all(...params) as Record<string, unknown>[];
   return rows.map(mapFileRecord);
 }
 
 export function searchFts(db: AtlasDatabase, workspace: string, query: string, limit = 10): AtlasSearchHit[] {
-  const rows = db.prepare(
-    `SELECT f.*, rank
-     FROM atlas_fts
-     JOIN atlas_files AS f ON f.id = atlas_fts.rowid
-     WHERE f.workspace = ?
-       AND atlas_fts MATCH ?
-     ORDER BY rank ASC, f.file_path ASC
-     LIMIT ?`,
-  ).all(workspace, query, limit) as Array<Record<string, unknown> & { rank?: number }>;
+  const ftsQuery = prepareFtsQuery(query);
+  if (!ftsQuery) return [];
+  try {
+    const rows = db.prepare(
+      `SELECT f.*, rank
+       FROM atlas_fts
+       JOIN atlas_files AS f ON f.id = atlas_fts.rowid
+       WHERE f.workspace = ?
+         AND atlas_fts MATCH ?
+       ORDER BY rank ASC, f.file_path ASC
+       LIMIT ?`,
+    ).all(workspace, ftsQuery, limit) as Array<Record<string, unknown> & { rank?: number }>;
 
-  return rows.map((row, index) => ({
-    file: mapFileRecord(row),
-    rank: index + 1,
-    score: typeof row.rank === 'number' ? row.rank : index + 1,
-    source: 'fts',
-  }));
+    return rows.map((row, index) => ({
+      file: mapFileRecord(row),
+      rank: index + 1,
+      score: typeof row.rank === 'number' ? row.rank : index + 1,
+      source: 'fts',
+    }));
+  } catch (err) {
+    console.warn('[atlas-core] FTS search failed for query:', JSON.stringify(ftsQuery), (err as Error).message);
+    return [];
+  }
 }
 
 export function searchVector(db: AtlasDatabase, workspace: string, embedding: number[], limit = 10): AtlasSearchHit[] {
-  const rows = db.prepare(
-    `SELECT f.*, distance
-     FROM atlas_embeddings
-     JOIN atlas_files AS f ON f.id = atlas_embeddings.file_id
-     WHERE f.workspace = ?
-       AND embedding MATCH ?
-       AND k = ?
-     ORDER BY distance ASC, f.file_path ASC
-     LIMIT ?`,
-  ).all(workspace, JSON.stringify(embedding), limit, limit) as Array<Record<string, unknown> & { distance?: number }>;
+  try {
+    const rows = db.prepare(
+      `SELECT f.*, distance
+       FROM atlas_embeddings
+       JOIN atlas_files AS f ON f.id = atlas_embeddings.file_id
+       WHERE f.workspace = ?
+         AND embedding MATCH ?
+         AND k = ?
+       ORDER BY distance ASC, f.file_path ASC
+       LIMIT ?`,
+    ).all(workspace, JSON.stringify(embedding), limit, limit) as Array<Record<string, unknown> & { distance?: number }>;
 
-  return rows.map((row, index) => ({
-    file: mapFileRecord(row),
-    rank: index + 1,
-    score: typeof row.distance === 'number' ? row.distance : index + 1,
-    source: 'vector',
-  }));
+    return rows.map((row, index) => ({
+      file: mapFileRecord(row),
+      rank: index + 1,
+      score: typeof row.distance === 'number' ? row.distance : index + 1,
+      source: 'vector',
+    }));
+  } catch (err) {
+    console.warn('[atlas-core] vector search failed:', (err as Error).message);
+    return [];
+  }
+}
+
+export function searchChangelogFts(
+  db: AtlasDatabase,
+  workspace: string,
+  query: string,
+  limit = 10,
+): AtlasChangelogSearchHit[] {
+  const ftsQuery = prepareFtsQuery(query);
+  if (!ftsQuery) return [];
+
+  try {
+    const rows = db.prepare(
+      `SELECT c.*, rank
+       FROM atlas_changelog_fts
+       JOIN atlas_changelog AS c ON c.id = atlas_changelog_fts.rowid
+       WHERE c.workspace = ?
+         AND atlas_changelog_fts MATCH ?
+       ORDER BY rank ASC, c.created_at DESC, c.id DESC
+       LIMIT ?`,
+    ).all(workspace, ftsQuery, limit) as Array<Record<string, unknown> & { rank?: number }>;
+
+    return rows.map((row, index) => ({
+      record: mapChangelogRecord(row),
+      rank: index + 1,
+      score: typeof row.rank === 'number' ? row.rank : index + 1,
+      source: 'fts',
+    }));
+  } catch (err) {
+    console.warn('[atlas-core] changelog FTS search failed for query:', JSON.stringify(ftsQuery), (err as Error).message);
+    return [];
+  }
+}
+
+export function searchChangelogVector(
+  db: AtlasDatabase,
+  workspace: string,
+  embedding: number[],
+  limit = 10,
+): AtlasChangelogSearchHit[] {
+  try {
+    const rows = db.prepare(
+      `SELECT c.*, distance
+       FROM atlas_changelog_embeddings
+       JOIN atlas_changelog AS c ON c.id = atlas_changelog_embeddings.changelog_id
+       WHERE c.workspace = ?
+         AND embedding MATCH ?
+         AND k = ?
+       ORDER BY distance ASC, c.created_at DESC, c.id DESC
+       LIMIT ?`,
+    ).all(workspace, JSON.stringify(embedding), limit, limit) as Array<Record<string, unknown> & { distance?: number }>;
+
+    return rows.map((row, index) => ({
+      record: mapChangelogRecord(row),
+      rank: index + 1,
+      score: typeof row.distance === 'number' ? row.distance : index + 1,
+      source: 'vector',
+    }));
+  } catch (err) {
+    console.warn('[atlas-core] changelog vector search failed:', (err as Error).message);
+    return [];
+  }
 }
 
 export function populateFts(db: AtlasDatabase, fileId: number): void {
@@ -379,6 +605,40 @@ export function populateFts(db: AtlasDatabase, fileId: number): void {
     document.patterns,
     document.hazards,
     document.cross_refs,
+  );
+}
+
+function changelogFtsDocumentForRecord(record: AtlasChangelogRecord): Record<string, string> {
+  return {
+    file_path: normalizeSearchText(record.file_path),
+    summary: normalizeSearchText(record.summary),
+    cluster: normalizeSearchText(record.cluster ?? ''),
+    patterns_added: normalizeSearchText(stringifyFtsValue(record.patterns_added)),
+    hazards_added: normalizeSearchText(stringifyFtsValue(record.hazards_added)),
+  };
+}
+
+export function populateChangelogFts(db: AtlasDatabase, changelogId: number): void {
+  const row = db.prepare('SELECT * FROM atlas_changelog WHERE id = ? LIMIT 1').get(changelogId) as Record<string, unknown> | undefined;
+  if (!row) {
+    return;
+  }
+
+  const record = mapChangelogRecord(row);
+  const document = changelogFtsDocumentForRecord(record);
+
+  db.prepare('DELETE FROM atlas_changelog_fts WHERE rowid = ?').run(changelogId);
+  db.prepare(
+    `INSERT INTO atlas_changelog_fts (
+      rowid, file_path, summary, cluster, patterns_added, hazards_added
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    changelogId,
+    document.file_path,
+    document.summary,
+    document.cluster,
+    document.patterns_added,
+    document.hazards_added,
   );
 }
 
@@ -409,6 +669,124 @@ export function listPatternFiles(db: AtlasDatabase, workspace: string, pattern: 
      ORDER BY file_path ASC`,
   ).all(workspace, pattern) as Record<string, unknown>[];
   return rows.map(mapFileRecord);
+}
+
+export function insertAtlasChangelog(db: AtlasDatabase, input: AtlasChangelogInsertInput): AtlasChangelogRecord {
+  const result = db.prepare(
+    `INSERT INTO atlas_changelog (
+      workspace, file_path, summary, patterns_added, patterns_removed,
+      hazards_added, hazards_removed, cluster, breaking_changes, commit_sha,
+      author_instance_id, author_engine, review_entry_id, source,
+      verification_status, verification_notes
+    ) VALUES (
+      @workspace, @file_path, @summary, @patterns_added, @patterns_removed,
+      @hazards_added, @hazards_removed, @cluster, @breaking_changes, @commit_sha,
+      @author_instance_id, @author_engine, @review_entry_id, @source,
+      @verification_status, @verification_notes
+    )`,
+  ).run({
+    workspace: input.workspace,
+    file_path: input.file_path,
+    summary: input.summary,
+    patterns_added: JSON.stringify(input.patterns_added ?? []),
+    patterns_removed: JSON.stringify(input.patterns_removed ?? []),
+    hazards_added: JSON.stringify(input.hazards_added ?? []),
+    hazards_removed: JSON.stringify(input.hazards_removed ?? []),
+    cluster: input.cluster ?? null,
+    breaking_changes: input.breaking_changes ? 1 : 0,
+    commit_sha: input.commit_sha ?? null,
+    author_instance_id: input.author_instance_id ?? null,
+    author_engine: input.author_engine ?? null,
+    review_entry_id: input.review_entry_id ?? null,
+    source: input.source ?? 'agent',
+    verification_status: input.verification_status ?? 'pending',
+    verification_notes: input.verification_notes ?? null,
+  }) as { lastInsertRowid?: number | bigint };
+
+  const insertId = result.lastInsertRowid == null ? null : Number(result.lastInsertRowid);
+  if (insertId == null || !Number.isFinite(insertId)) {
+    throw new Error('Failed to determine atlas_changelog insert id.');
+  }
+
+  const row = db.prepare(
+    'SELECT * FROM atlas_changelog WHERE id = ? LIMIT 1',
+  ).get(insertId) as Record<string, unknown> | undefined;
+  if (!row) {
+    throw new Error('Inserted atlas_changelog row could not be read back.');
+  }
+  return mapChangelogRecord(row);
+}
+
+export function upsertChangelogEmbedding(
+  db: AtlasDatabase,
+  changelogId: number,
+  embedding: number[],
+): void {
+  try {
+    db.prepare('DELETE FROM atlas_changelog_embeddings WHERE changelog_id = ?').run(changelogId);
+    db.prepare(
+      'INSERT INTO atlas_changelog_embeddings (changelog_id, embedding) VALUES (?, ?)',
+    ).run(changelogId, JSON.stringify(embedding));
+  } catch (err) {
+    console.warn(`[atlas] changelog embedding write failed for changelog_id=${changelogId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export function queryAtlasChangelog(db: AtlasDatabase, filters: AtlasChangelogQuery): AtlasChangelogRecord[] {
+  const whereParts: string[] = ['c.workspace = ?'];
+  const params: Array<string | number> = [filters.workspace];
+
+  if (filters.file) {
+    whereParts.push('c.file_path = ?');
+    params.push(filters.file);
+  }
+  if (filters.file_prefix) {
+    whereParts.push('c.file_path LIKE ?');
+    params.push(`${filters.file_prefix}%`);
+  }
+  if (filters.cluster) {
+    whereParts.push('c.cluster = ?');
+    params.push(filters.cluster);
+  }
+  if (filters.since) {
+    whereParts.push('c.created_at >= ?');
+    params.push(filters.since);
+  }
+  if (filters.until) {
+    whereParts.push('c.created_at <= ?');
+    params.push(filters.until);
+  }
+  if (filters.verification_status) {
+    whereParts.push('c.verification_status = ?');
+    params.push(filters.verification_status);
+  }
+  if (filters.breaking_only) {
+    whereParts.push('c.breaking_changes = 1');
+  }
+
+  let fromClause = 'atlas_changelog AS c';
+  if (filters.query) {
+    const ftsQuery = prepareFtsQuery(filters.query);
+    if (!ftsQuery) {
+      return [];
+    }
+    fromClause = 'atlas_changelog_fts JOIN atlas_changelog AS c ON c.id = atlas_changelog_fts.rowid';
+    whereParts.push('atlas_changelog_fts MATCH ?');
+    params.push(ftsQuery);
+  }
+
+  const limit = Math.max(1, Math.min(filters.limit ?? 20, 100));
+  params.push(limit);
+
+  const rows = db.prepare(
+    `SELECT c.*
+     FROM ${fromClause}
+     WHERE ${whereParts.join(' AND ')}
+     ORDER BY c.created_at DESC, c.id DESC
+     LIMIT ?`,
+  ).all(...params) as Record<string, unknown>[];
+
+  return rows.map(mapChangelogRecord);
 }
 
 export function enqueueReextract(
@@ -461,6 +839,41 @@ export function listAtlasFiles(db: AtlasDatabase, workspace: string): AtlasFileR
     'SELECT * FROM atlas_files WHERE workspace = ? ORDER BY file_path ASC',
   ).all(workspace) as Record<string, unknown>[];
   return rows.map(mapFileRecord);
+}
+
+export function getAtlasEmbedding(db: AtlasDatabase, workspace: string, filePath: string): number[] | null {
+  const fileId = getAtlasFileId(db, workspace, filePath);
+  if (fileId == null) return null;
+
+  try {
+    const row = db.prepare(
+      `SELECT embedding
+       FROM atlas_embeddings
+       WHERE file_id = ${fileId}
+       LIMIT 1`,
+    ).get() as Record<string, unknown> | undefined;
+    return row ? parseEmbeddingValue(row.embedding) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function listAtlasExportRows(
+  db: AtlasDatabase,
+  workspace: string,
+  filePaths?: string[],
+): AtlasExportRow[] {
+  const files = listAtlasFiles(db, workspace);
+  const selected = filePaths && filePaths.length > 0
+    ? new Set(filePaths)
+    : null;
+
+  return files
+    .filter((file) => !selected || selected.has(file.file_path))
+    .map((file) => ({
+      file,
+      embedding: getAtlasEmbedding(db, workspace, file.file_path),
+    }));
 }
 
 export function listImportEdges(db: AtlasDatabase, workspace: string): AtlasImportEdgeRecord[] {
