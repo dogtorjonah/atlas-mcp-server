@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
+import type { AtlasDatabase } from '../db.js';
 import { searchAtlasFiles, searchFts, searchVector } from '../db.js';
 import { trackQuery } from '../queryLog.js';
+import { discoverWorkspaces } from './bridge.js';
 
 interface RankedResult {
   file_path: string;
@@ -66,25 +68,98 @@ function formatResult(result: RankedResult): string {
   return `${result.record.file_path} — ${result.record.purpose || result.record.blurb}`;
 }
 
+function searchOneWorkspace(
+  db: AtlasDatabase,
+  ws: string,
+  query: string,
+  limit: number,
+  provider: AtlasRuntime['provider'],
+  embedding: number[] | null,
+): RankedResult[] {
+  const bm25Results = mapHitsToRanked(searchFts(db, ws, query, limit));
+  const vectorResults = embedding
+    ? mapHitsToRanked(searchVector(db, ws, embedding, limit))
+    : [];
+
+  if (bm25Results.length > 0 || vectorResults.length > 0) {
+    return fuseResults(bm25Results, vectorResults);
+  }
+  return searchAtlasFiles(db, ws, query, limit).map((record, index) => ({
+    file_path: record.file_path,
+    score: 1 / (index + 1),
+    record,
+    source: 'fallback' as const,
+  }));
+}
+
+function formatResultWithWorkspace(result: RankedResult, ws: string, showWorkspace: boolean): string {
+  const prefix = showWorkspace ? `[${ws}] ` : '';
+  return `${prefix}${result.record.file_path} — ${result.record.purpose || result.record.blurb}`;
+}
+
 export function registerSearchTool(server: McpServer, runtime: AtlasRuntime): void {
   server.tool(
     'atlas_search',
     {
       query: z.string().min(1),
-      limit: z.number().int().min(1).max(20).optional(),
-      workspace: z.string().optional(),
+      limit: z.number().int().min(1).max(30).optional(),
+      workspace: z.string().optional().describe('Single workspace to search (defaults to current)'),
+      workspaces: z.array(z.string()).optional().describe('Search across multiple workspaces. Overrides workspace param. Omit to search current workspace only.'),
     },
-    async ({ query, limit, workspace }: { query: string; limit?: number; workspace?: string }) => {
-      const activeWorkspace = workspace ?? runtime.config.workspace;
+    async ({ query, limit, workspace, workspaces }: { query: string; limit?: number; workspace?: string; workspaces?: string[] }) => {
       const maxResults = limit ?? 5;
-      const bm25Results = mapHitsToRanked(searchFts(runtime.db, activeWorkspace, query, maxResults));
-      const vectorResults = runtime.provider
-        ? mapHitsToRanked(searchVector(runtime.db, activeWorkspace, await runtime.provider.embedText(query), maxResults))
-        : [];
 
-      const results = bm25Results.length > 0 || vectorResults.length > 0
-        ? fuseResults(bm25Results, vectorResults)
-        : fallbackSearch(runtime, activeWorkspace, query, maxResults);
+      // ── Cross-workspace mode ──
+      if (workspaces?.length) {
+        const allDbs = discoverWorkspaces(runtime.config.sourceRoot);
+        if (allDbs.length === 0) {
+          return { content: [{ type: 'text', text: 'No atlas databases found on this machine.' }] };
+        }
+
+        const targetDbs = allDbs.filter((d) => workspaces.includes(d.workspace));
+        if (targetDbs.length === 0) {
+          const available = allDbs.map((d) => d.workspace).join(', ');
+          return { content: [{ type: 'text', text: `No matching workspaces. Available: ${available}` }] };
+        }
+
+        const embedding = runtime.provider ? await runtime.provider.embedText(query) : null;
+        const perDbLimit = Math.max(maxResults, 10);
+        const allResults: Array<RankedResult & { workspace: string }> = [];
+
+        for (const bdb of targetDbs) {
+          const results = searchOneWorkspace(bdb.db, bdb.workspace, query, perDbLimit, runtime.provider, embedding);
+          for (const r of results) {
+            allResults.push({ ...r, workspace: bdb.workspace });
+          }
+        }
+
+        // Cross-workspace RRF fusion
+        const fused = new Map<string, { score: number; result: RankedResult; workspace: string }>();
+        allResults.forEach((r, index) => {
+          const key = `${r.workspace}:${r.file_path}`;
+          const existing = fused.get(key);
+          const addedScore = 1 / (60 + index + 1);
+          if (existing) {
+            existing.score += addedScore;
+          } else {
+            fused.set(key, { score: r.score + addedScore, result: r, workspace: r.workspace });
+          }
+        });
+
+        const sorted = [...fused.values()].sort((a, b) => b.score - a.score).slice(0, maxResults);
+        if (sorted.length === 0) {
+          return { content: [{ type: 'text', text: `No results for "${query}" across workspaces: ${workspaces.join(', ')}` }] };
+        }
+
+        const header = `Atlas search: "${query}" (${sorted.length} results across ${targetDbs.length} workspaces)\n`;
+        const lines = sorted.map((s) => formatResultWithWorkspace(s.result, s.workspace, true));
+        return { content: [{ type: 'text', text: header + '\n' + lines.join('\n\n') }] };
+      }
+
+      // ── Single-workspace mode (existing behavior) ──
+      const activeWorkspace = workspace ?? runtime.config.workspace;
+      const embedding = runtime.provider ? await runtime.provider.embedText(query) : null;
+      const results = searchOneWorkspace(runtime.db, activeWorkspace, query, maxResults, runtime.provider, embedding);
 
       const sliced = results.slice(0, maxResults);
       trackQuery(

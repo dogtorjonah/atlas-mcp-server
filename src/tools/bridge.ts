@@ -8,15 +8,13 @@
  * sibling repos with .atlas/atlas.sqlite files.
  */
 
-import { z } from 'zod';
 import fs from 'node:fs';
-import fsAsync from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import Database from 'better-sqlite3';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
-import { prepareFtsQuery, searchAtlasFiles, searchFts, type AtlasDatabase } from '../db.js';
+import type { AtlasDatabase } from '../db.js';
 
 const require = createRequire(import.meta.url);
 
@@ -29,17 +27,6 @@ export interface BridgeDb {
   workspace: string;
   sourceRoot: string;
   dbPath: string;
-}
-
-interface BridgeSearchResult {
-  workspace: string;
-  file_path: string;
-  cluster: string;
-  loc: number;
-  purpose: string;
-  patterns: string[];
-  hazards: string[];
-  score: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,38 +114,6 @@ export function discoverWorkspaces(currentSourceRoot: string): BridgeDb[] {
 // Query helpers
 // ---------------------------------------------------------------------------
 
-function parseJsonArray(value: unknown): string[] {
-  if (typeof value !== 'string' || !value) return [];
-  try { return JSON.parse(value); } catch { return []; }
-}
-
-function searchFtsInDb(db: AtlasDatabase, workspace: string, query: string, limit: number): BridgeSearchResult[] {
-  if (!prepareFtsQuery(query)) return [];
-  return searchFts(db, workspace, query, limit).map((hit) => ({
-    workspace,
-    file_path: hit.file.file_path,
-    cluster: hit.file.cluster ?? '',
-    loc: hit.file.loc,
-    purpose: hit.file.purpose,
-    patterns: hit.file.patterns,
-    hazards: hit.file.hazards,
-    score: hit.score,
-  }));
-}
-
-function searchFallbackInDb(db: AtlasDatabase, workspace: string, query: string, limit: number): BridgeSearchResult[] {
-  return searchAtlasFiles(db, workspace, query, limit).map((row, index) => ({
-    workspace,
-    file_path: row.file_path,
-    cluster: row.cluster ?? '',
-    loc: row.loc,
-    purpose: row.purpose,
-    patterns: row.patterns,
-    hazards: row.hazards,
-    score: 1 / (index + 1),
-  }));
-}
-
 function getFileCount(db: AtlasDatabase, workspace: string): number {
   try {
     const row = db.prepare('SELECT count(*) as cnt FROM atlas_files WHERE workspace = ?').get(workspace) as { cnt: number } | undefined;
@@ -169,87 +124,10 @@ function getFileCount(db: AtlasDatabase, workspace: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// RRF fusion
-// ---------------------------------------------------------------------------
-
-function fuseResults(allResults: BridgeSearchResult[], k = 60): BridgeSearchResult[] {
-  const scores = new Map<string, BridgeSearchResult & { fusedScore: number }>();
-
-  allResults.forEach((result, index) => {
-    const key = `${result.workspace}:${result.file_path}`;
-    const existing = scores.get(key);
-    const addedScore = 1 / (k + index + 1);
-    if (existing) {
-      existing.fusedScore += addedScore;
-    } else {
-      scores.set(key, { ...result, fusedScore: result.score + addedScore });
-    }
-  });
-
-  return [...scores.values()]
-    .sort((a, b) => b.fusedScore - a.fusedScore)
-    .map(({ fusedScore, ...rest }) => ({ ...rest, score: fusedScore }));
-}
-
-// ---------------------------------------------------------------------------
 // Tool registration
 // ---------------------------------------------------------------------------
 
 export function registerBridgeTools(server: McpServer, runtime: AtlasRuntime): void {
-  // ── atlas_bridge ──
-  server.tool(
-    'atlas_bridge',
-    {
-      query: z.string().min(1),
-      workspaces: z.array(z.string()).optional(),
-      limit: z.number().int().min(1).max(30).optional(),
-    },
-    async ({ query, workspaces, limit }: { query: string; workspaces?: string[]; limit?: number }) => {
-      const allDbs = discoverWorkspaces(runtime.config.sourceRoot);
-      if (allDbs.length === 0) {
-        return { content: [{ type: 'text', text: 'No atlas databases found on this machine.' }] };
-      }
-
-      const targetDbs = workspaces?.length
-        ? allDbs.filter((d) => workspaces.includes(d.workspace))
-        : allDbs;
-
-      if (targetDbs.length === 0) {
-        const available = allDbs.map((d) => d.workspace).join(', ');
-        return { content: [{ type: 'text', text: `No matching workspaces. Available: ${available}` }] };
-      }
-
-      const maxResults = limit ?? 10;
-      const perDbLimit = Math.max(maxResults, 10);
-
-      const allResults: BridgeSearchResult[] = [];
-      for (const bdb of targetDbs) {
-        const ftsResults = searchFtsInDb(bdb.db, bdb.workspace, query, perDbLimit);
-        if (ftsResults.length > 0) {
-          allResults.push(...ftsResults);
-        } else {
-          allResults.push(...searchFallbackInDb(bdb.db, bdb.workspace, query, perDbLimit));
-        }
-      }
-
-      if (allResults.length === 0) {
-        const searched = targetDbs.map((d) => d.workspace).join(', ');
-        return { content: [{ type: 'text', text: `No results for "${query}" across workspaces: ${searched}` }] };
-      }
-
-      const fused = fuseResults(allResults).slice(0, maxResults);
-      const header = `🌉 Atlas Bridge: "${query}" (${fused.length} results across ${targetDbs.length} workspaces)\n`;
-
-      const lines = fused.map((r) => {
-        const hazardStr = r.hazards?.length ? `\n  ⚠️ ${r.hazards.join('; ')}` : '';
-        const patternStr = r.patterns?.length ? `\n  Patterns: ${r.patterns.join(', ')}` : '';
-        return `📄 [${r.workspace}] ${r.file_path}\n  Cluster: ${r.cluster} | ${r.loc} LOC\n  ${r.purpose}${patternStr}${hazardStr}`;
-      });
-
-      return { content: [{ type: 'text', text: header + '\n' + lines.join('\n\n') }] };
-    },
-  );
-
   // ── atlas_bridge_list ──
   server.tool(
     'atlas_bridge_list',
@@ -274,115 +152,4 @@ export function registerBridgeTools(server: McpServer, runtime: AtlasRuntime): v
     },
   );
 
-  // ── atlas_bridge_lookup ──
-  server.tool(
-    'atlas_bridge_lookup',
-    {
-      file_path: z.string().min(1),
-      workspace: z.string().min(1),
-      includeSource: z.boolean().optional().describe('Include source code in output (default true). Set false for metadata-only.'),
-    },
-    async ({ file_path, workspace, includeSource }: { file_path: string; workspace: string; includeSource?: boolean }) => {
-      const allDbs = discoverWorkspaces(runtime.config.sourceRoot);
-      const target = allDbs.find((d) => d.workspace === workspace);
-      if (!target) {
-        const available = allDbs.map((d) => d.workspace).join(', ');
-        return { content: [{ type: 'text', text: `Workspace "${workspace}" not found. Available: ${available}` }] };
-      }
-
-      const row = target.db.prepare(
-        'SELECT * FROM atlas_files WHERE workspace = ? AND file_path = ? LIMIT 1',
-      ).get(target.workspace, file_path) as Record<string, unknown> | undefined;
-
-      if (!row) {
-        const fuzzy = target.db.prepare(
-          'SELECT file_path FROM atlas_files WHERE workspace = ? AND file_path LIKE ? LIMIT 5',
-        ).all(target.workspace, `%${file_path}%`) as Array<{ file_path: string }>;
-
-        if (fuzzy.length > 0) {
-          return { content: [{ type: 'text', text: `No exact match. Did you mean:\n${fuzzy.map((r) => `  - ${r.file_path}`).join('\n')}` }] };
-        }
-        return { content: [{ type: 'text', text: `No atlas entry for "${file_path}" in workspace "${workspace}".` }] };
-      }
-
-      const purpose = String(row.purpose ?? '');
-      const blurb = String(row.blurb ?? '');
-      const cluster = String(row.cluster ?? '');
-      const loc = Number(row.loc ?? 0);
-      const patterns = parseJsonArray(row.patterns);
-      const hazards = parseJsonArray(row.hazards);
-      const conventions = parseJsonArray(row.conventions);
-      const dataFlows = parseJsonArray(row.data_flows);
-
-      let publicApi: Array<{ name: string; type: string; signature?: string; description?: string }> = [];
-      try { publicApi = JSON.parse(String(row.public_api ?? '[]')); } catch { /* */ }
-      let keyTypes: Array<{ name: string; kind: string; exported?: boolean; description?: string }> = [];
-      try { keyTypes = JSON.parse(String(row.key_types ?? '[]')); } catch { /* */ }
-      let dependencies: Record<string, unknown> = {};
-      try { dependencies = row.dependencies ? JSON.parse(String(row.dependencies)) : {}; } catch { /* */ }
-      let crossRefs: { symbols?: Record<string, { type: string; call_sites?: Array<{ file: string; usage_type: string; count: number; context: string }>; total_usages: number; blast_radius: string }>; total_cross_references?: number } | null = null;
-      try { crossRefs = row.cross_refs ? JSON.parse(String(row.cross_refs)) : null; } catch { /* */ }
-
-      const sections: string[] = [];
-      sections.push(`# [${workspace}] ${file_path}`);
-      sections.push(`**Cluster:** ${cluster} | **LOC:** ${loc}`);
-      sections.push(`**Purpose:** ${purpose}`);
-      if (blurb) sections.push(`**Blurb:** ${blurb}`);
-      if (publicApi?.length) {
-        const apis = publicApi.map((api) =>
-          `  - \`${api.name}\` (${api.type})${api.signature ? `: ${api.signature}` : ''}${api.description ? ` — ${api.description}` : ''}`,
-        );
-        sections.push(`**Public API:**\n${apis.join('\n')}`);
-      }
-      if (patterns?.length) sections.push(`**Patterns:** ${patterns.join(', ')}`);
-
-      if (dependencies) {
-        const deps = dependencies as { imports?: string[]; imported_by?: string[] };
-        if (deps.imports?.length) sections.push(`**Imports:** ${deps.imports.join(', ')}`);
-        if (deps.imported_by?.length) sections.push(`**Imported by:** ${deps.imported_by.join(', ')}`);
-      }
-
-      if (dataFlows?.length) sections.push(`**Data flows:**\n${dataFlows.map((f) => `  - ${f}`).join('\n')}`);
-
-      if (keyTypes?.length) {
-        const types = keyTypes.map((t) =>
-          `  - \`${t.name}\` (${t.kind ?? '?'}${t.exported ? ', exported' : ''})${t.description ? ` — ${t.description}` : ''}`,
-        );
-        sections.push(`**Key types:**\n${types.join('\n')}`);
-      }
-
-      if (hazards?.length) sections.push(`**⚠️ Hazards:**\n${hazards.map((h) => `  - ${h}`).join('\n')}`);
-      if (conventions?.length) sections.push(`**Conventions:**\n${conventions.map((c) => `  - ${c}`).join('\n')}`);
-
-      if (crossRefs?.symbols) {
-        const syms = Object.entries(crossRefs.symbols);
-        if (syms.length > 0) {
-          const totalRefs = crossRefs.total_cross_references ?? 0;
-          const lines = syms.map(([name, info]) => {
-            const callerLines = info.call_sites?.map((cs) => `      ${cs.file} (${cs.usage_type}, ${cs.count}x): ${cs.context}`) || [];
-            return `  - \`${name}\` (${info.type}, blast_radius=${info.blast_radius}, ${info.total_usages} usages)\n${callerLines.join('\n')}`;
-          });
-          sections.push(`**🔗 Cross-References (${totalRefs} total):**\n${lines.join('\n')}`);
-        }
-      }
-
-      // ── Source code (opt-out via includeSource: false) ──
-      const shouldIncludeSource = includeSource !== false;
-      if (shouldIncludeSource && target.sourceRoot) {
-        try {
-          const fullPath = path.join(target.sourceRoot, file_path);
-          const content = await fsAsync.readFile(fullPath, 'utf8');
-          const sourceLines = content.split('\n');
-          const MAX_SOURCE_LINES = 500;
-          const truncated = sourceLines.length > MAX_SOURCE_LINES;
-          const displayLines = truncated ? sourceLines.slice(0, MAX_SOURCE_LINES) : sourceLines;
-          sections.push(`**Source (${sourceLines.length} lines${truncated ? `, showing first ${MAX_SOURCE_LINES}` : ''}):**\n\`\`\`\n${displayLines.join('\n')}\n\`\`\`${truncated ? `\n... ${sourceLines.length - MAX_SOURCE_LINES} more lines.` : ''}`);
-        } catch {
-          // File not readable — skip source
-        }
-      }
-
-      return { content: [{ type: 'text', text: sections.join('\n\n') }] };
-    },
-  );
 }
