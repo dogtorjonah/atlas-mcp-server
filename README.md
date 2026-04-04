@@ -1,4 +1,3 @@
-# @voxxo/atlas
 
 **A codebase brain for any LLM.**
 
