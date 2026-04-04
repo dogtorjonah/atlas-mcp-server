@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AtlasDatabase } from '../db.js';
-import { getAtlasFile } from '../db.js';
+import { getAtlasFile, replaceReferencesForFile } from '../db.js';
 import type { AtlasProvider } from '../types.js';
 import type { Pass0FileInfo } from './pass0.js';
 
@@ -365,6 +365,7 @@ export function persistPass2CrossRefs(
      SET cross_refs = ?, updated_at = CURRENT_TIMESTAMP
      WHERE workspace = ? AND file_path = ?`,
   ).run(JSON.stringify(crossRefs), workspace, filePath);
+  replaceReferencesForFile(db, workspace, filePath, crossRefs);
 }
 
 function countDirectoryHops(sourceFile: string, callerFile: string): number {
@@ -525,6 +526,10 @@ export async function runPass2(
     };
 
     result[file.filePath] = crossRefs;
+
+    if (options.db && options.workspace) {
+      replaceReferencesForFile(options.db, options.workspace, file.filePath, crossRefs);
+    }
   }
 
   return result;

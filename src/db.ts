@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import Database from 'better-sqlite3';
 
@@ -108,6 +109,56 @@ export interface AtlasImportEdgeRecord {
   workspace: string;
   source_file: string;
   target_file: string;
+}
+
+export type AtlasSymbolKind =
+  | 'function'
+  | 'class'
+  | 'type'
+  | 'interface'
+  | 'const'
+  | 'enum'
+  | 'namespace'
+  | 're-export'
+  | 'value'
+  | 'default'
+  | 'unknown';
+
+export interface AtlasSymbolRecord {
+  id: number;
+  workspace: string;
+  file_path: string;
+  name: string;
+  kind: AtlasSymbolKind;
+  exported: boolean;
+  line_start: number | null;
+  line_end: number | null;
+  signature_hash: string | null;
+}
+
+export interface AtlasReferenceRecord {
+  id: number;
+  workspace: string;
+  source_symbol_id: number | null;
+  target_symbol_id: number | null;
+  edge_type: string;
+  source_file: string;
+  target_file: string;
+  usage_count: number;
+  confidence: number;
+  provenance: string;
+  last_verified: string | null;
+}
+
+export interface AtlasSymbolUpsertInput {
+  workspace: string;
+  file_path: string;
+  name: string;
+  kind: string;
+  exported?: boolean;
+  line_start?: number | null;
+  line_end?: number | null;
+  signature_hash?: string | null;
 }
 
 export interface AtlasMetaUpsertInput {
@@ -233,6 +284,8 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
     healVec0Table(db, 'atlas_embeddings', 'file_id');
     healVec0Table(db, 'atlas_changelog_embeddings', 'changelog_id');
   }
+
+  backfillSymbolsAndReferencesFromAtlasFiles(db);
 
   return db;
 }
@@ -799,6 +852,287 @@ export function enqueueReextract(
     `INSERT INTO atlas_reextract_queue (workspace, file_path, trigger_reason, status)
      VALUES (?, ?, ?, 'pending')`,
   ).run(workspace, filePath, triggerReason);
+}
+
+function normalizeSymbolKind(kind: string): AtlasSymbolKind {
+  const normalized = kind.trim().toLowerCase();
+  switch (normalized) {
+    case 'function':
+    case 'class':
+    case 'type':
+    case 'interface':
+    case 'const':
+    case 'enum':
+    case 'namespace':
+    case 're-export':
+    case 'value':
+    case 'default':
+      return normalized;
+    default:
+      return 'unknown';
+  }
+}
+
+function buildSignatureHash(filePath: string, name: string, kind: string): string {
+  return createHash('sha1').update(`${filePath}:${name}:${kind}`).digest('hex');
+}
+
+function mapUsageTypeToEdgeType(usageType: string): 'runtime_call' | 'type_ref' | 'reexport' | 'config_ref' {
+  const normalized = usageType.trim().toLowerCase();
+  if (normalized.includes('type')) {
+    return 'type_ref';
+  }
+  if (normalized.includes('re-export') || normalized.includes('reexport')) {
+    return 'reexport';
+  }
+  if (normalized.includes('config')) {
+    return 'config_ref';
+  }
+  return 'runtime_call';
+}
+
+export function listSymbols(
+  db: AtlasDatabase,
+  workspace: string,
+  filePath?: string,
+): AtlasSymbolRecord[] {
+  const rows = (filePath
+    ? db.prepare(
+      `SELECT id, workspace, file_path, name, kind, exported, line_start, line_end, signature_hash
+       FROM symbols
+       WHERE workspace = ? AND file_path = ?
+       ORDER BY file_path ASC, name ASC`,
+    ).all(workspace, filePath)
+    : db.prepare(
+      `SELECT id, workspace, file_path, name, kind, exported, line_start, line_end, signature_hash
+       FROM symbols
+       WHERE workspace = ?
+       ORDER BY file_path ASC, name ASC`,
+    ).all(workspace)) as Record<string, unknown>[];
+
+  return rows.map((row) => ({
+    id: Number(row.id ?? 0),
+    workspace: String(row.workspace ?? ''),
+    file_path: String(row.file_path ?? ''),
+    name: String(row.name ?? ''),
+    kind: normalizeSymbolKind(String(row.kind ?? 'unknown')),
+    exported: Number(row.exported ?? 0) === 1,
+    line_start: row.line_start == null ? null : Number(row.line_start),
+    line_end: row.line_end == null ? null : Number(row.line_end),
+    signature_hash: row.signature_hash == null ? null : String(row.signature_hash),
+  }));
+}
+
+export function listReferences(
+  db: AtlasDatabase,
+  workspace: string,
+  sourceFile?: string,
+): AtlasReferenceRecord[] {
+  const rows = (sourceFile
+    ? db.prepare(
+      `SELECT id, workspace, source_symbol_id, target_symbol_id, edge_type,
+              source_file, target_file, usage_count, confidence, provenance, last_verified
+       FROM "references"
+       WHERE workspace = ? AND source_file = ?
+       ORDER BY source_file ASC, target_file ASC, id ASC`,
+    ).all(workspace, sourceFile)
+    : db.prepare(
+      `SELECT id, workspace, source_symbol_id, target_symbol_id, edge_type,
+              source_file, target_file, usage_count, confidence, provenance, last_verified
+       FROM "references"
+       WHERE workspace = ?
+       ORDER BY source_file ASC, target_file ASC, id ASC`,
+    ).all(workspace)) as Record<string, unknown>[];
+
+  return rows.map((row) => ({
+    id: Number(row.id ?? 0),
+    workspace: String(row.workspace ?? ''),
+    source_symbol_id: row.source_symbol_id == null ? null : Number(row.source_symbol_id),
+    target_symbol_id: row.target_symbol_id == null ? null : Number(row.target_symbol_id),
+    edge_type: String(row.edge_type ?? 'runtime_call'),
+    source_file: String(row.source_file ?? ''),
+    target_file: String(row.target_file ?? ''),
+    usage_count: Number(row.usage_count ?? 1),
+    confidence: Number(row.confidence ?? 1),
+    provenance: String(row.provenance ?? 'inferred'),
+    last_verified: row.last_verified == null ? null : String(row.last_verified),
+  }));
+}
+
+export function upsertSymbolsForFile(
+  db: AtlasDatabase,
+  workspace: string,
+  filePath: string,
+  symbols: AtlasSymbolUpsertInput[],
+): void {
+  const deleteStmt = db.prepare('DELETE FROM symbols WHERE workspace = ? AND file_path = ?');
+  const insertStmt = db.prepare(
+    `INSERT INTO symbols (
+       workspace, file_path, name, kind, exported, line_start, line_end, signature_hash, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(workspace, file_path, name, kind) DO UPDATE SET
+       exported = excluded.exported,
+       line_start = excluded.line_start,
+       line_end = excluded.line_end,
+       signature_hash = excluded.signature_hash,
+       updated_at = CURRENT_TIMESTAMP`,
+  );
+
+  const tx = db.transaction((rows: AtlasSymbolUpsertInput[]) => {
+    deleteStmt.run(workspace, filePath);
+
+    const dedupe = new Set<string>();
+    for (const row of rows) {
+      const name = row.name.trim();
+      if (!name) continue;
+      const kind = normalizeSymbolKind(row.kind);
+      const key = `${name}:${kind}`;
+      if (dedupe.has(key)) continue;
+      dedupe.add(key);
+      insertStmt.run(
+        workspace,
+        filePath,
+        name,
+        kind,
+        row.exported === false ? 0 : 1,
+        row.line_start ?? null,
+        row.line_end ?? null,
+        row.signature_hash ?? buildSignatureHash(filePath, name, kind),
+      );
+    }
+  });
+
+  tx(symbols);
+}
+
+export function replaceReferencesForFile(
+  db: AtlasDatabase,
+  workspace: string,
+  sourceFile: string,
+  crossRefs: AtlasCrossRefs | null,
+): void {
+  const deleteStmt = db.prepare('DELETE FROM "references" WHERE workspace = ? AND source_file = ?');
+  const insertSymbolStmt = db.prepare(
+    `INSERT INTO symbols (
+       workspace, file_path, name, kind, exported, signature_hash, updated_at
+     ) VALUES (?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(workspace, file_path, name, kind) DO UPDATE SET
+       exported = 1,
+       signature_hash = excluded.signature_hash,
+       updated_at = CURRENT_TIMESTAMP`,
+  );
+  const getSymbolIdsStmt = db.prepare(
+    'SELECT id, name FROM symbols WHERE workspace = ? AND file_path = ?',
+  );
+  const insertRefStmt = db.prepare(
+    `INSERT INTO "references" (
+       workspace, source_symbol_id, target_symbol_id, edge_type, source_file, target_file,
+       usage_count, confidence, provenance, last_verified, updated_at
+     ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+  );
+
+  const tx = db.transaction((refs: AtlasCrossRefs | null) => {
+    deleteStmt.run(workspace, sourceFile);
+    if (!refs?.symbols || typeof refs.symbols !== 'object') {
+      return;
+    }
+
+    const provenance = refs.pass2_model && refs.pass2_model !== 'heuristic' ? 'llm' : 'inferred';
+    const confidence = provenance === 'llm' ? 0.8 : 0.6;
+    const verifiedAt = refs.pass2_timestamp ?? null;
+
+    for (const [symbolName, symbolData] of Object.entries(refs.symbols)) {
+      const cleanName = symbolName.trim();
+      if (!cleanName) continue;
+      const kind = normalizeSymbolKind(String(symbolData.type ?? 'unknown'));
+      insertSymbolStmt.run(
+        workspace,
+        sourceFile,
+        cleanName,
+        kind,
+        buildSignatureHash(sourceFile, cleanName, kind),
+      );
+    }
+
+    const symbolRows = getSymbolIdsStmt.all(workspace, sourceFile) as Array<{ id: number; name: string }>;
+    const symbolIdByName = new Map(symbolRows.map((row) => [row.name, row.id]));
+
+    for (const [symbolName, symbolData] of Object.entries(refs.symbols)) {
+      const sourceSymbolId = symbolIdByName.get(symbolName.trim()) ?? null;
+      if (sourceSymbolId == null || !Array.isArray(symbolData.call_sites)) {
+        continue;
+      }
+
+      for (const callSite of symbolData.call_sites) {
+        const targetFile = typeof callSite.file === 'string' ? callSite.file.trim() : '';
+        if (!targetFile) continue;
+        const usageCount = typeof callSite.count === 'number' && Number.isFinite(callSite.count)
+          ? Math.max(1, Math.floor(callSite.count))
+          : 1;
+        const edgeType = mapUsageTypeToEdgeType(typeof callSite.usage_type === 'string' ? callSite.usage_type : '');
+
+        insertRefStmt.run(
+          workspace,
+          sourceSymbolId,
+          edgeType,
+          sourceFile,
+          targetFile,
+          usageCount,
+          confidence,
+          provenance,
+          verifiedAt,
+        );
+      }
+    }
+  });
+
+  tx(crossRefs);
+}
+
+export function backfillSymbolsAndReferencesFromAtlasFiles(db: AtlasDatabase): void {
+  try {
+    const symbolCountRow = db.prepare('SELECT COUNT(*) AS total FROM symbols').get() as { total?: number } | undefined;
+    const referenceCountRow = db.prepare('SELECT COUNT(*) AS total FROM "references"').get() as { total?: number } | undefined;
+    const symbolCount = symbolCountRow?.total ?? 0;
+    const referenceCount = referenceCountRow?.total ?? 0;
+
+    // Startup backfill should only bootstrap legacy-empty databases.
+    // Avoid repeated full-table rewrites when one table is legitimately sparse.
+    if (!(symbolCount === 0 && referenceCount === 0)) {
+      return;
+    }
+
+    const rows = db.prepare(
+      `SELECT workspace, file_path, exports, cross_refs
+       FROM atlas_files
+       ORDER BY workspace ASC, file_path ASC`,
+    ).all() as Array<{
+      workspace: string;
+      file_path: string;
+      exports: string | null;
+      cross_refs: string | null;
+    }>;
+
+    for (const row of rows) {
+      const exportsList = parseJson<Array<{ name?: unknown; type?: unknown }>>(row.exports, []);
+      const symbols: AtlasSymbolUpsertInput[] = exportsList
+        .filter((entry) => typeof entry?.name === 'string' && typeof entry?.type === 'string')
+        .map((entry) => ({
+          workspace: row.workspace,
+          file_path: row.file_path,
+          name: String(entry.name),
+          kind: String(entry.type),
+          exported: true,
+        }));
+      upsertSymbolsForFile(db, row.workspace, row.file_path, symbols);
+
+      const crossRefs = parseJson<AtlasCrossRefs | null>(row.cross_refs, null);
+      replaceReferencesForFile(db, row.workspace, row.file_path, crossRefs);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[atlas] symbols/references backfill skipped: ${message}`);
+  }
 }
 
 export function replaceImportEdges(db: AtlasDatabase, workspace: string, edges: AtlasImportEdgeRecord[]): void {

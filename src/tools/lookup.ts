@@ -80,7 +80,7 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
     {
       filePath: z.string().min(1),
       workspace: z.string().optional(),
-      includeSource: z.boolean().optional().describe('Include source code in output (default true). Set false for metadata-only.'),
+      includeSource: z.boolean().optional().describe('Include source code in output (default false). Set true for full source.'),
     },
     async ({ filePath, workspace, includeSource }: { filePath: string; workspace?: string; includeSource?: boolean }) => {
       const ws = workspace ?? runtime.config.workspace;
@@ -218,8 +218,8 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
         if (callers.length > 20) lines.push(`  ... and ${callers.length - 20} more`);
       }
 
-      // ── Source code (opt-out via includeSource: false) ──
-      const shouldIncludeSource = includeSource !== false;
+      // ── Source code (opt-in via includeSource: true) ──
+      const shouldIncludeSource = includeSource === true;
       if (shouldIncludeSource && sourceFile) {
         const sourceLines = sourceFile.content.split('\n');
         const MAX_SOURCE_LINES = 500;

@@ -2,7 +2,12 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AtlasDatabase, AtlasImportEdgeRecord } from '../db.js';
-import { replaceImportEdges, upsertFileRecord, upsertPass0Record } from '../db.js';
+import {
+  replaceImportEdges,
+  upsertFileRecord,
+  upsertPass0Record,
+  upsertSymbolsForFile,
+} from '../db.js';
 import { createPhaseProgressReporter } from './progress.js';
 
 export interface Pass0ExportEntry {
@@ -330,6 +335,19 @@ export async function runPass0(
         language: detectLanguage(relativePath),
       });
     }
+
+    upsertSymbolsForFile(
+      db,
+      workspace,
+      relativePath,
+      exports.map((entry) => ({
+        workspace,
+        file_path: relativePath,
+        name: entry.name,
+        kind: entry.type,
+        exported: true,
+      })),
+    );
 
     progress.complete('pass 0');
   }
