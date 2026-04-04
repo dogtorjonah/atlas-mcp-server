@@ -1,7 +1,7 @@
 
 **A codebase brain for any LLM.**
 
-`@voxxo/atlas` indexes a TypeScript codebase into structured knowledge, serves that knowledge through MCP tools, and keeps the atlas fresh when you reindex or flush updated files.
+Atlas` indexes a TypeScript codebase into structured knowledge, serves that knowledge through MCP tools, and keeps the atlas fresh when you reindex or flush updated files.
 
 ## What It Does
 
