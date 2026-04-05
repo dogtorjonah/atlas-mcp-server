@@ -15,6 +15,17 @@ const reindexStartedAt = new Map<string, Date>();
 const reindexFileCount = new Map<string, number>();
 const reindexMode = new Map<string, 'full' | 'pass2'>();
 
+// Track last-completed reindex so status checks after a fast run don't
+// fall through to the dry-run path with no indication it already ran.
+interface ReindexCompletion {
+  mode: 'full' | 'pass2';
+  succeeded: number;
+  failed: number;
+  durationMs: number;
+  completedAt: Date;
+}
+const lastCompletion = new Map<string, ReindexCompletion>();
+
 // ── Staleness detection for dry-run reporting ──
 
 function hashContent(content: string): string {
@@ -152,6 +163,33 @@ export async function runReindexTool(runtime: AtlasRuntime, {
   const estimate = estimateInitCost(fileCount, profile);
 
   if (!confirm) {
+    // Check if a recent reindex just completed (avoids confusing dry-run
+    // output when the user checks right after a fast run finishes).
+    const completed = lastCompletion.get(activeWorkspace);
+    if (completed) {
+      const agoMs = Date.now() - completed.completedAt.getTime();
+      // Show completion notice for up to 5 minutes after the run ends
+      if (agoMs < 5 * 60 * 1000) {
+        const agoSec = Math.round(agoMs / 1000);
+        const durationSec = Math.round(completed.durationMs / 1000);
+        const modeLabel = completed.mode === 'pass2' ? 'Pass 2 rerun' : 'Reindex';
+        lastCompletion.delete(activeWorkspace);
+        return {
+          content: [{
+            type: 'text',
+            text: [
+              `✅ ${modeLabel} completed ${agoSec}s ago (ran for ${durationSec}s)`,
+              `  ${completed.succeeded} succeeded, ${completed.failed} failed`,
+              `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
+              '',
+              'Atlas data is now up-to-date. Use `atlas_query` to explore the refreshed data.',
+            ].join('\n'),
+          }],
+        };
+      }
+      lastCompletion.delete(activeWorkspace);
+    }
+
     const startedAt = reindexStartedAt.get(activeWorkspace);
     if (activeReindexes.has(activeWorkspace) && startedAt) {
       const elapsed = Math.round((Date.now() - startedAt.getTime()) / 1000);
@@ -333,7 +371,8 @@ export async function runReindexTool(runtime: AtlasRuntime, {
   const confirmNeedsWork = confirmStats ? confirmStats.stale + confirmStats.incomplete : pass2TargetCount;
   const confirmEstimate = confirmStats ? estimateInitCost(confirmNeedsWork, profile) : estimate;
 
-  reindexStartedAt.set(activeWorkspace, new Date());
+  const runStartedAt = new Date();
+  reindexStartedAt.set(activeWorkspace, runStartedAt);
   reindexFileCount.set(activeWorkspace, requestedPhase === 'pass2' ? pass2TargetCount : confirmNeedsWork);
   reindexMode.set(activeWorkspace, requestedPhase);
 
@@ -346,7 +385,15 @@ export async function runReindexTool(runtime: AtlasRuntime, {
     phase: requestedPhase,
     files: uniqueFiles.length > 0 ? uniqueFiles : undefined,
   }).then((result) => {
-    console.log(`[atlas-reindex] complete: ${result.filesProcessed - result.filesFailed} succeeded, ${result.filesFailed} failed`);
+    const succeeded = result.filesProcessed - result.filesFailed;
+    console.log(`[atlas-reindex] complete: ${succeeded} succeeded, ${result.filesFailed} failed`);
+    lastCompletion.set(activeWorkspace, {
+      mode: requestedPhase,
+      succeeded,
+      failed: result.filesFailed,
+      durationMs: Date.now() - runStartedAt.getTime(),
+      completedAt: new Date(),
+    });
     notifyAtlasContextUpdated(runtime.server).catch(() => {});
   }).catch((error: unknown) => {
     console.error('[atlas-reindex] failed:', error instanceof Error ? error.message : String(error));
