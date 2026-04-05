@@ -1,10 +1,12 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { AtlasRuntime } from '../types.js';
+import type { AtlasRuntime, AtlasFileRecord } from '../types.js';
 import { toolWithDescription } from './helpers.js';
-import { enqueueReextract, listAtlasFiles } from '../db.js';
+import { enqueueReextract, getFilePhase, listAtlasFiles } from '../db.js';
+import type { AtlasDatabase } from '../db.js';
 import { notifyAtlasContextUpdated } from '../resources/context.js';
 import { estimateInitCost, formatUsd, resolveCostProfile, runRuntimeReindex } from '../pipeline/index.js';
 
@@ -12,6 +14,61 @@ const activeReindexes = new Map<string, Promise<void>>();
 const reindexStartedAt = new Map<string, Date>();
 const reindexFileCount = new Map<string, number>();
 const reindexMode = new Map<string, 'full' | 'pass2'>();
+
+// ── Staleness detection for dry-run reporting ──
+
+function hashContent(content: string): string {
+  return createHash('sha1').update(content).digest('hex');
+}
+
+interface StaleStats {
+  total: number;
+  complete: number;
+  stale: number;
+  staleFiles: string[];
+  incomplete: number;
+  incompleteFiles: string[];
+}
+
+function computeStaleStats(
+  db: AtlasDatabase,
+  workspace: string,
+  sourceRoot: string,
+  atlasFiles: AtlasFileRecord[],
+): StaleStats {
+  let complete = 0;
+  let stale = 0;
+  let incomplete = 0;
+  const staleFiles: string[] = [];
+  const incompleteFiles: string[] = [];
+
+  for (const record of atlasFiles) {
+    const absPath = path.join(sourceRoot, record.file_path);
+    let currentHash: string;
+    try {
+      const content = fs.readFileSync(absPath, 'utf8');
+      currentHash = hashContent(content);
+    } catch {
+      // Source file no longer exists — treat as stale (orphan)
+      stale++;
+      staleFiles.push(record.file_path);
+      continue;
+    }
+
+    const phase = getFilePhase(db, workspace, record.file_path, currentHash);
+    if (phase === 'pass2') {
+      complete++;
+    } else if (record.file_hash !== currentHash) {
+      stale++;
+      staleFiles.push(record.file_path);
+    } else {
+      incomplete++;
+      incompleteFiles.push(record.file_path);
+    }
+  }
+
+  return { total: atlasFiles.length, complete, stale, staleFiles, incomplete, incompleteFiles };
+}
 
 function buildPercentBar(percent: number, width = 18): string {
   const normalized = Math.max(0, Math.min(percent, 100));
@@ -151,33 +208,66 @@ export async function runReindexTool(runtime: AtlasRuntime, {
         }],
       };
     }
-    return {
-      content: [{
-        type: 'text',
-        text: [
-          requestedPhase === 'pass2'
-            ? `atlas_reindex dry-run (phase=pass2): ${pass2TargetCount} eligible file${pass2TargetCount === 1 ? '' : 's'}`
-            : `atlas_reindex dry-run: ${fileCount} files (~${estimate.totalCalls} API calls)`,
-          `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
-          requestedPhase === 'pass2'
-            ? 'Mode: pass2-only rerun (cross-refs only, preserves existing extraction fields)'
-            : `Estimated cost: ~${formatUsd(estimate.estimatedUsd)}`,
-          requestedPhase === 'pass2'
-            ? `Requested files: ${uniqueFiles.length > 0 ? uniqueFiles.length : 'all eligible files'}`
-            : 'Mode: resume-safe (skip completed files)',
-          requestedPhase === 'pass2' && pass2MissingCount > 0
-            ? `Missing requested files: ${pass2MissingCount}`
-            : '',
-          ``,
-          requestedPhase === 'pass2'
-            ? 'Call atlas_reindex with confirm=true and phase="pass2" to rerun cross-refs only.'
-            : 'Call atlas_reindex with confirm=true to proceed.',
-          requestedPhase === 'pass2'
-            ? 'Pass files=["path/to/file.ts"] with phase="pass2" to limit the rerun.'
-            : 'Pass files=["path/to/file.ts"] to re-extract specific files instead.',
-        ].filter(Boolean).join('\n'),
-      }],
-    };
+    // ── Compute staleness for accurate dry-run reporting ──
+    if (requestedPhase === 'pass2') {
+      return {
+        content: [{
+          type: 'text',
+          text: [
+            `atlas_reindex dry-run (phase=pass2): ${pass2TargetCount} eligible file${pass2TargetCount === 1 ? '' : 's'}`,
+            `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
+            'Mode: pass2-only rerun (cross-refs only, preserves existing extraction fields)',
+            `Requested files: ${uniqueFiles.length > 0 ? uniqueFiles.length : 'all eligible files'}`,
+            pass2MissingCount > 0 ? `Missing requested files: ${pass2MissingCount}` : '',
+            ``,
+            'Call atlas_reindex with confirm=true and phase="pass2" to rerun cross-refs only.',
+            'Pass files=["path/to/file.ts"] with phase="pass2" to limit the rerun.',
+          ].filter(Boolean).join('\n'),
+        }],
+      };
+    }
+
+    const stats = computeStaleStats(runtime.db, activeWorkspace, runtime.config.sourceRoot, atlasFiles);
+    const needsWork = stats.stale + stats.incomplete;
+    const staleEstimate = estimateInitCost(needsWork, profile);
+
+    const lines: string[] = [
+      `atlas_reindex dry-run: ${fileCount} total files in atlas`,
+      `  ✅ ${stats.complete} complete (up-to-date, will be skipped)`,
+    ];
+    if (stats.stale > 0) {
+      lines.push(`  🔄 ${stats.stale} stale (source changed since last extraction)`);
+    }
+    if (stats.incomplete > 0) {
+      lines.push(`  ⚠️  ${stats.incomplete} incomplete (extraction not finished)`);
+    }
+    if (needsWork === 0) {
+      lines.push(`  🎉 All files are up-to-date — nothing to do.`);
+    } else {
+      lines.push(`  📊 ${needsWork} file${needsWork === 1 ? '' : 's'} need processing (~${staleEstimate.totalCalls} API calls)`);
+    }
+    lines.push(`Provider: ${profile.providerLabel} (${profile.modelLabel})`);
+    if (needsWork > 0) {
+      lines.push(`Estimated cost: ~${formatUsd(staleEstimate.estimatedUsd)}`);
+    }
+    lines.push('Mode: resume-safe (skip completed files)');
+    if (stats.staleFiles.length > 0 && stats.staleFiles.length <= 20) {
+      lines.push('', 'Stale files:');
+      for (const f of stats.staleFiles) lines.push(`  • ${f}`);
+    }
+    if (stats.incompleteFiles.length > 0 && stats.incompleteFiles.length <= 20) {
+      lines.push('', 'Incomplete files:');
+      for (const f of stats.incompleteFiles) lines.push(`  • ${f}`);
+    }
+    lines.push('', needsWork > 0
+      ? 'Call atlas_reindex with confirm=true to proceed.'
+      : 'No reindex needed — all extractions are current.',
+    );
+    if (needsWork > 0) {
+      lines.push('Pass files=["path/to/file.ts"] to re-extract specific files instead.');
+    }
+
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
   }
 
   // ── Mode: full pipeline ──
@@ -187,8 +277,15 @@ export async function runReindexTool(runtime: AtlasRuntime, {
     };
   }
 
+  // Compute accurate stale count for the start message
+  const confirmStats = requestedPhase !== 'pass2'
+    ? computeStaleStats(runtime.db, activeWorkspace, runtime.config.sourceRoot, atlasFiles)
+    : null;
+  const confirmNeedsWork = confirmStats ? confirmStats.stale + confirmStats.incomplete : pass2TargetCount;
+  const confirmEstimate = confirmStats ? estimateInitCost(confirmNeedsWork, profile) : estimate;
+
   reindexStartedAt.set(activeWorkspace, new Date());
-  reindexFileCount.set(activeWorkspace, requestedPhase === 'pass2' ? pass2TargetCount : fileCount);
+  reindexFileCount.set(activeWorkspace, requestedPhase === 'pass2' ? pass2TargetCount : confirmNeedsWork);
   reindexMode.set(activeWorkspace, requestedPhase);
 
   activeReindexes.set(activeWorkspace, runRuntimeReindex({
@@ -218,11 +315,11 @@ export async function runReindexTool(runtime: AtlasRuntime, {
         text: [
           requestedPhase === 'pass2'
             ? `Pass 2 rerun started in background: ${pass2TargetCount} eligible file${pass2TargetCount === 1 ? '' : 's'}`
-            : `Reindex started in background (resume-safe): ${fileCount} indexed rows (~${estimate.totalCalls} API calls)`,
+            : `Reindex started in background (resume-safe): ${fileCount} total, ${confirmNeedsWork} need processing (~${confirmEstimate.totalCalls} API calls)`,
           `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
           requestedPhase === 'pass2'
             ? 'Mode: pass2-only rerun (cross-refs only)'
-            : `Estimated cost: ~${formatUsd(estimate.estimatedUsd)}`,
+            : `Estimated cost: ~${formatUsd(confirmEstimate.estimatedUsd)}`,
           `Run atlas_reindex again for live file counts and % progress.`,
           `Atlas context will update when complete.`,
         ].join('\n'),
