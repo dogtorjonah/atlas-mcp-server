@@ -13,6 +13,7 @@
     "./pipeline": "./dist/pipeline/index.js"
   },
   "bin": {
+    "atlas": "./dist/server.js",
     "atlas-mcp": "./dist/server.js"
   },
   "scripts": {
