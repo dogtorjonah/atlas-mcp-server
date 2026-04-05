@@ -36,6 +36,15 @@ export interface BridgeDb {
 
 const bridgeDbs = new Map<string, BridgeDb>();
 
+/** Close and remove a bridge DB handle from the pool (e.g. before nuking it). */
+export function closeBridgeDb(dbPath: string): void {
+  const entry = bridgeDbs.get(dbPath);
+  if (entry) {
+    try { entry.db.close(); } catch { /* ignore */ }
+    bridgeDbs.delete(dbPath);
+  }
+}
+
 function loadSqliteVec(db: AtlasDatabase): void {
   try {
     const sv = require('sqlite-vec') as { getLoadablePath?: () => string };
