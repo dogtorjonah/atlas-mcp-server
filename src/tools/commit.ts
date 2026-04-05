@@ -12,6 +12,9 @@
  * reextract enqueue fallback is used here.
  */
 
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
@@ -35,6 +38,16 @@ function buildChangelogEmbeddingInput(entry: AtlasChangelogRecord): string {
     ...entry.hazards_added,
     ...entry.hazards_removed,
   ].join(' ').trim();
+}
+
+function computeCurrentFileHash(filePath: string, sourceRoot: string): string | null {
+  try {
+    const absPath = path.isAbsolute(filePath) ? filePath : path.join(sourceRoot, filePath);
+    const content = fs.readFileSync(absPath, 'utf8');
+    return createHash('sha1').update(content).digest('hex');
+  } catch {
+    return null;
+  }
 }
 
 function buildAtlasEmbeddingInput(fields: {
@@ -212,7 +225,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       upsertFileRecord(runtime.db, {
         workspace: runtime.config.workspace,
         file_path,
-        file_hash: existing?.file_hash ?? null,
+        file_hash: computeCurrentFileHash(file_path, runtime.config.sourceRoot) ?? existing?.file_hash ?? null,
         cluster: cluster ?? existing?.cluster ?? null,
         loc: existing?.loc ?? 0,
         blurb: mergedBlurb,

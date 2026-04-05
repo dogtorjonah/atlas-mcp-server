@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime, AtlasFileRecord } from '../types.js';
 import { toolWithDescription } from './helpers.js';
-import { enqueueReextract, getFilePhase, listAtlasFiles } from '../db.js';
+import { deleteAtlasFile, enqueueReextract, getFilePhase, listAtlasFiles } from '../db.js';
 import type { AtlasDatabase } from '../db.js';
 import { notifyAtlasContextUpdated } from '../resources/context.js';
 import { estimateInitCost, formatUsd, resolveCostProfile, runRuntimeReindex } from '../pipeline/index.js';
@@ -28,6 +28,8 @@ interface StaleStats {
   staleFiles: string[];
   incomplete: number;
   incompleteFiles: string[];
+  pruned: number;
+  prunedFiles: string[];
 }
 
 function computeStaleStats(
@@ -39,8 +41,10 @@ function computeStaleStats(
   let complete = 0;
   let stale = 0;
   let incomplete = 0;
+  let pruned = 0;
   const staleFiles: string[] = [];
   const incompleteFiles: string[] = [];
+  const prunedFiles: string[] = [];
 
   for (const record of atlasFiles) {
     const absPath = path.join(sourceRoot, record.file_path);
@@ -49,9 +53,10 @@ function computeStaleStats(
       const content = fs.readFileSync(absPath, 'utf8');
       currentHash = hashContent(content);
     } catch {
-      // Source file no longer exists — treat as stale (orphan)
-      stale++;
-      staleFiles.push(record.file_path);
+      // Source file no longer exists — prune the orphaned atlas entry
+      deleteAtlasFile(db, workspace, record.file_path);
+      pruned++;
+      prunedFiles.push(record.file_path);
       continue;
     }
 
@@ -67,7 +72,7 @@ function computeStaleStats(
     }
   }
 
-  return { total: atlasFiles.length, complete, stale, staleFiles, incomplete, incompleteFiles };
+  return { total: atlasFiles.length, complete, stale, staleFiles, incomplete, incompleteFiles, pruned, prunedFiles };
 }
 
 function buildPercentBar(percent: number, width = 18): string {
@@ -230,9 +235,11 @@ export async function runReindexTool(runtime: AtlasRuntime, {
     const stats = computeStaleStats(runtime.db, activeWorkspace, runtime.config.sourceRoot, atlasFiles);
     const needsWork = stats.stale + stats.incomplete;
     const staleEstimate = estimateInitCost(needsWork, profile);
+    // Adjust total to reflect pruned orphans
+    const effectiveTotal = fileCount - stats.pruned;
 
     const lines: string[] = [
-      `atlas_reindex dry-run: ${fileCount} total files in atlas`,
+      `atlas_reindex dry-run: ${effectiveTotal} total files in atlas`,
       `  ✅ ${stats.complete} complete (up-to-date, will be skipped)`,
     ];
     if (stats.stale > 0) {
@@ -240,6 +247,9 @@ export async function runReindexTool(runtime: AtlasRuntime, {
     }
     if (stats.incomplete > 0) {
       lines.push(`  ⚠️  ${stats.incomplete} incomplete (extraction not finished)`);
+    }
+    if (stats.pruned > 0) {
+      lines.push(`  🗑️  ${stats.pruned} orphaned (source deleted, pruned from atlas)`);
     }
     if (needsWork === 0) {
       lines.push(`  🎉 All files are up-to-date — nothing to do.`);
@@ -251,6 +261,10 @@ export async function runReindexTool(runtime: AtlasRuntime, {
       lines.push(`Estimated cost: ~${formatUsd(staleEstimate.estimatedUsd)}`);
     }
     lines.push('Mode: resume-safe (skip completed files)');
+    if (stats.prunedFiles.length > 0 && stats.prunedFiles.length <= 20) {
+      lines.push('', 'Pruned orphans:');
+      for (const f of stats.prunedFiles) lines.push(`  • ${f}`);
+    }
     if (stats.staleFiles.length > 0 && stats.staleFiles.length <= 20) {
       lines.push('', 'Stale files:');
       for (const f of stats.staleFiles) lines.push(`  • ${f}`);

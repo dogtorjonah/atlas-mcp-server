@@ -1341,7 +1341,7 @@ export function isFileComplete(db: AtlasDatabase, workspace: string, filePath: s
 function hasEmbedding(db: AtlasDatabase, fileId: number): boolean {
   try {
     const row = db.prepare(
-      'SELECT 1 FROM atlas_embeddings_rowids WHERE id = ? LIMIT 1',
+      'SELECT 1 FROM atlas_embeddings_rowids WHERE rowid = ? LIMIT 1',
     ).get(fileId) as Record<string, unknown> | undefined;
     return row !== undefined;
   } catch {
@@ -1489,4 +1489,38 @@ export function upsertFileRecord(db: AtlasDatabase, record: AtlasFileUpsertInput
   if (fileId != null) {
     populateFts(db, fileId);
   }
+}
+
+/**
+ * Delete an atlas file and all related data (FTS, embeddings, edges, symbols).
+ * Used to prune orphaned entries for files that no longer exist on disk.
+ */
+export function deleteAtlasFile(db: AtlasDatabase, workspace: string, filePath: string): boolean {
+  const row = db.prepare(
+    'SELECT id FROM atlas_files WHERE workspace = ? AND file_path = ? LIMIT 1',
+  ).get(workspace, filePath) as { id: number } | undefined;
+  if (!row) return false;
+
+  const fileId = row.id;
+
+  // Clean up FTS entry
+  db.prepare('DELETE FROM atlas_fts WHERE rowid = ?').run(fileId);
+
+  // Clean up embedding (vec0 — use literal id, not bound param)
+  try {
+    db.prepare(`DELETE FROM atlas_embeddings WHERE file_id = ${fileId}`).run();
+  } catch {
+    // vec0 table may not exist
+  }
+
+  // Clean up import edges
+  db.prepare('DELETE FROM import_edges WHERE workspace = ? AND (source_file = ? OR target_file = ?)').run(workspace, filePath, filePath);
+
+  // Clean up symbols
+  db.prepare('DELETE FROM symbols WHERE workspace = ? AND file_path = ?').run(workspace, filePath);
+
+  // Clean up the atlas_files row itself
+  db.prepare('DELETE FROM atlas_files WHERE id = ?').run(fileId);
+
+  return true;
 }
