@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { createInterface } from 'node:readline/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -117,6 +119,54 @@ function parseInitArgs(argv: string[]): {
     phase,
     files,
   };
+}
+
+/**
+ * Auto-install atlas into Claude Code's global settings (~/.claude/settings.json).
+ * Runs after every `atlas init` — idempotent, never prompts.
+ */
+function installGlobalMcpConfig(): void {
+  try {
+    // Resolve the path to dist/server.js (works whether running via tsx or compiled)
+    const thisFile = fileURLToPath(import.meta.url);
+    const distServerJs = thisFile.endsWith('.ts')
+      ? path.resolve(path.dirname(thisFile), '..', 'dist', 'server.js')
+      : thisFile;
+
+    const claudeDir = path.join(os.homedir(), '.claude');
+    const settingsPath = path.join(claudeDir, 'settings.json');
+
+    let settings: Record<string, unknown> = {};
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+    } catch {
+      // File doesn't exist or invalid JSON — start fresh
+    }
+
+    const mcpServers = (settings.mcpServers ?? {}) as Record<string, unknown>;
+    const existing = mcpServers.atlas as Record<string, unknown> | undefined;
+
+    // Check if already installed with the same path
+    if (existing && Array.isArray(existing.args) && existing.args[0] === distServerJs) {
+      console.log('[atlas-init] ✓ Claude Code global config already set');
+      return;
+    }
+
+    mcpServers.atlas = {
+      command: 'node',
+      args: [distServerJs],
+    };
+    settings.mcpServers = mcpServers;
+
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    console.log('[atlas-init] ✓ Installed atlas into ~/.claude/settings.json (global)');
+    console.log('[atlas-init]   Atlas tools are now available in Claude Code for ALL repos.');
+  } catch (err) {
+    // Non-fatal — don't block init if we can't write settings
+    console.log(`[atlas-init] ⚠ Could not auto-install to Claude Code global config: ${err instanceof Error ? err.message : err}`);
+    console.log('[atlas-init]   You can manually add atlas to ~/.claude/settings.json');
+  }
 }
 
 function readInitProviderChoice(answer: string, fallback: AtlasServerConfig['provider']): AtlasServerConfig['provider'] {
@@ -322,6 +372,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       phase: initArgs?.phase,
       files: initArgs?.files,
     });
+
+    // Auto-install atlas MCP server into Claude Code global settings
+    installGlobalMcpConfig();
+
     return;
   }
 
