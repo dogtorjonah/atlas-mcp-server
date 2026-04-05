@@ -293,9 +293,38 @@ function buildContext(runtime: AtlasRuntime, workspace: string, includeTestFiles
   };
 }
 
+// Extension groups for dual-artifact detection (TS source + JS compiled output)
+const DUAL_ARTIFACT_EXTENSIONS: string[][] = [
+  ['.ts', '.js'],
+  ['.tsx', '.jsx'],
+  ['.mts', '.mjs'],
+  ['.cts', '.cjs'],
+];
+
+function hasLiveCompanion(filePath: string, ctx: ReachabilityContext): boolean {
+  const ext = path.extname(filePath);
+  for (const group of DUAL_ARTIFACT_EXTENSIONS) {
+    const idx = group.indexOf(ext);
+    if (idx === -1) continue;
+    const base = filePath.slice(0, -ext.length);
+    for (let i = 0; i < group.length; i++) {
+      if (i === idx) continue;
+      const companion = base + group[i];
+      if (!ctx.graph.nodes.has(companion)) continue;
+      // Suppress if companion is reachable OR has any importers
+      if (ctx.reachable.has(companion)) return true;
+      const importers = ctx.graph.reverseAdjacency.get(companion);
+      if (importers && importers.length > 0) return true;
+    }
+  }
+  return false;
+}
+
 function formatDeadFiles(ctx: ReachabilityContext): string {
   const deadFiles = [...ctx.graph.nodes]
     .filter((file) => !ctx.reachable.has(file))
+    // Suppress false positives: if a JS/TS companion is reachable or has importers, this file isn't truly dead
+    .filter((file) => !hasLiveCompanion(file, ctx))
     .sort((a, b) => a.localeCompare(b));
 
   const lines: string[] = [];

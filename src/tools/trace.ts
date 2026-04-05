@@ -159,13 +159,18 @@ export function registerTraceTool(server: McpServer, runtime: AtlasRuntime): voi
         }, 'Either "from" or "to" is not present in the current workspace graph.');
       }
 
+      // Build bidirectional adjacency so trace can find paths through
+      // shared dependencies (A→C←B becomes A→C→B via reverse edge).
       const adjacency = new Map<string, TraceEdge[]>();
       for (const node of nodeSet) adjacency.set(node, []);
       for (const edge of listImportEdges(db, ws)) {
         const src = normalizeGraphPath(edge.source_file);
         const dst = normalizeGraphPath(edge.target_file);
         if (!nodeSet.has(src) || !nodeSet.has(dst)) continue;
+        // Forward: src imports dst
         adjacency.get(src)?.push({ from: src, to: dst, edge_kind: 'import', edge_type: 'import', weight: 1 });
+        // Reverse: dst is imported by src (enables traversal through shared deps)
+        adjacency.get(dst)?.push({ from: dst, to: src, edge_kind: 'import', edge_type: 'imported_by', weight: 1.5 });
       }
 
       if (includeRefs) {
@@ -174,6 +179,14 @@ export function registerTraceTool(server: McpServer, runtime: AtlasRuntime): voi
           if (!nodeSet.has(edge.from) || !nodeSet.has(edge.to)) continue;
           if (requestedEdgeTypes.size > 0 && !requestedEdgeTypes.has(edge.edge_type)) continue;
           adjacency.get(edge.from)?.push(edge);
+          // Reverse reference edge
+          adjacency.get(edge.to)?.push({
+            ...edge,
+            from: edge.to,
+            to: edge.from,
+            edge_type: `reverse_${edge.edge_type}`,
+            weight: edge.weight * 1.5,
+          });
         }
       }
 

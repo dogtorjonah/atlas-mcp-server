@@ -8,8 +8,9 @@ import { registerTraceTool } from './trace.js';
 import { registerCyclesTool } from './cycles.js';
 import { registerReachabilityTool } from './reachability.js';
 import { registerGraphTool } from './graph.js';
+import { runClusterTool } from './cluster.js';
 
-type GraphAction = 'impact' | 'neighbors' | 'trace' | 'cycles' | 'reachability' | 'graph';
+type GraphAction = 'impact' | 'neighbors' | 'trace' | 'cycles' | 'reachability' | 'graph' | 'cluster';
 type ToolHandler = (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>;
 type RegisterToolFn = (server: McpServer, runtime: AtlasRuntime) => void;
 
@@ -47,6 +48,7 @@ interface CompositeArgs {
   direction?: 'imports' | 'importers' | 'both';
   include_symbols?: boolean;
   includeSymbols?: boolean;
+  cluster?: string;
 }
 
 type AtlasToolTextResult = { content: Array<{ type: 'text'; text: string }> };
@@ -121,12 +123,12 @@ export function registerGraphCompositeTool(server: McpServer, runtime: AtlasRunt
     [
       'Strategic graph and topology tool for understanding code relationships before making structural changes.',
       'Use atlas_graph when the question is about blast radius, dependency shape, paths, cycles, or neighborhood structure rather than document retrieval.',
-      'Actions: impact estimates downstream change surface for a file or symbol; neighbors shows the local structural neighborhood around a file; trace follows paths between files or symbols; cycles finds strongly connected regions; reachability answers dead-code, entrypoint, or path-query questions; graph gives a broader topology snapshot with edge filters and graph limits.',
+      'Actions: impact estimates downstream change surface for a file or symbol; neighbors shows the local structural neighborhood around a file; trace follows paths between files or symbols; cycles finds strongly connected regions; reachability answers dead-code, entrypoint, or path-query questions; graph gives a broader topology snapshot with edge filters and graph limits; cluster lists all files in a named community cluster.',
       'Workflow hints: run action=impact before editing shared modules; use neighbors when orienting around one file; use trace to explain why two areas are connected; use cycles before refactors intended to untangle coupling; use reachability to confirm dead files or shortest import paths; use graph when you need the broadest view of a subsystem.',
       'These results now benefit from the newer Atlas pipeline: AST-verified structural references, deterministic flow edges, and community clustering provide better graph fidelity than import-only analysis.',
     ].join('\n'),
     {
-      action: z.enum(['impact', 'neighbors', 'trace', 'cycles', 'reachability', 'graph']),
+      action: z.enum(['impact', 'neighbors', 'trace', 'cycles', 'reachability', 'graph', 'cluster']),
       workspace: z.string().optional(),
       file_path: z.string().optional(),
       filePath: z.string().optional(),
@@ -159,6 +161,7 @@ export function registerGraphCompositeTool(server: McpServer, runtime: AtlasRunt
       direction: z.enum(['imports', 'importers', 'both']).optional(),
       include_symbols: z.boolean().optional(),
       includeSymbols: z.boolean().optional(),
+      cluster: z.string().optional(),
     },
     async (args: CompositeArgs) => {
       const { action } = args;
@@ -190,6 +193,12 @@ export function registerGraphCompositeTool(server: McpServer, runtime: AtlasRunt
         }
         case 'graph':
           return handlers.graph(args as unknown as Record<string, unknown>);
+        case 'cluster': {
+          if (!args.cluster) {
+            return { content: [{ type: 'text', text: 'atlas_graph(action=cluster) requires the "cluster" parameter with a cluster name. Use atlas_query action=cluster to list available clusters.' }] };
+          }
+          return runClusterTool(runtime, { cluster: args.cluster, workspace: args.workspace });
+        }
         default:
           return { content: [{ type: 'text', text: `Unsupported action: ${String(action)}` }] };
       }

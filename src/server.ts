@@ -277,7 +277,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   // ── Composite tools (21 → 5 consolidation) ──
   // atlas_query:  search, lookup, brief, snippet, similar, plan_context, cluster, patterns, history
-  // atlas_graph:  impact, neighbors, trace, cycles, reachability, graph
+  // atlas_graph:  impact, neighbors, trace, cycles, reachability, graph, cluster
   // atlas_audit:  gaps, smells, hotspots
   // atlas_admin:  reindex, bridge_list
   registerQueryTool(server, runtime);
