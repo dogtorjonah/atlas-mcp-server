@@ -2,14 +2,16 @@
 
 **A codebase brain for any LLM.**
 
-`@voxxo/atlas` indexes a TypeScript/JavaScript codebase and its documentation into structured knowledge — purpose, public API, patterns, hazards, conventions, dependencies, data flows — and serves that knowledge through MCP tools so AI agents can search, inspect, and update code knowledge on demand.
+`@voxxo/atlas` indexes a codebase into structured knowledge — purpose, public API, patterns, hazards, conventions, dependencies, data flows, cross-references, and community clusters — and serves that knowledge through MCP tools so AI agents can search, inspect, and update code knowledge on demand.
 
-## What It Does
+## Highlights
 
-- **Indexes** your codebase into a structured atlas with blurbs, deep extractions, embeddings, and cross-references.
-- **Serves** the atlas through MCP tools so agents can search, look up files, explore clusters, and track changes.
-- **Stays current** — agents update the atlas inline via `atlas_commit` after editing files, and `atlas_reindex` rebuilds from scratch when needed.
-- **Bridges** across workspaces — search and look up files from any atlas database on your machine.
+- **Multi-language** — TypeScript, TSX, JavaScript, Python, Go, Rust, and Java via tree-sitter AST parsing
+- **Deterministic foundation** — structural analysis, data-flow edges, cross-references, and community detection run without any LLM calls
+- **LLM-enriched** — blurbs and deep extractions use your choice of provider (OpenAI, Anthropic, Gemini, Ollama)
+- **Self-guiding** — tool responses include contextual guidance hints so the AI knows what to do next, no external orchestrator needed
+- **Hybrid search** — BM25 + vector ranking with RRF fusion for both keyword and semantic queries
+- **Cross-workspace bridge** — search and look up files from any atlas database on your machine
 
 ## Quick Start
 
@@ -30,43 +32,76 @@ The init wizard walks you through the codebase path, workspace, provider, model,
 | **Anthropic** | `claude-haiku-4-5` | `voyage-3-small` (or OpenAI fallback) |
 | **Gemini** | `gemini-3.1-flash` | `gemini-embedding-001` |
 | **Ollama** | `llama3.2` (configurable) | `nomic-embed-text` (configurable) |
+| **None** | — | — | Deterministic-only mode: pass0-struct, pass0-flow, pass2, pass3 all run without a provider |
 
 ## Tools
 
-### Core
+Atlas exposes two tool surfaces: **composite tools** (fewer tools, action-dispatched) and **standalone tools** (one tool per action, backward-compatible). Both are registered simultaneously — use whichever your client prefers.
 
-| Tool | Purpose |
-|------|---------|
-| `atlas_search` | Semantic search across your codebase — hybrid BM25 + vector ranking |
-| `atlas_lookup` | Full atlas extraction for a specific file — purpose, API, patterns, hazards, imports, callers, recent changes, and staleness detection |
-| `atlas_cluster` | Get all files in a named cluster (e.g., `instance-lifecycle`, `signal-coordination`) |
-| `atlas_patterns` | Find all files using a specific pattern (e.g., `TTL-cache`, `battery-pack-injection`) |
+### Composite Tools (Recommended)
+
+5 tools that cover all 21+ actions via an `action` parameter:
+
+| Tool | Actions | Purpose |
+|------|---------|---------|
+| `atlas_query` | `search`, `lookup`, `brief`, `snippet`, `cluster`, `patterns`, `similar`, `plan_context`, `history` | All retrieval — finding, reading, and exploring code knowledge |
+| `atlas_graph` | `impact`, `reachability`, `neighbors`, `trace`, `cycles`, `graph` | All structural analysis — dependency graphs, blast radius, import chains |
+| `atlas_audit` | `gaps`, `smells`, `hotspots` | All quality analysis — dead code, code smells, churn hotspots |
+| `atlas_admin` | `reindex`, `bridge_list`, `flush` | All maintenance — pipeline runs, workspace discovery, cache invalidation |
+| `atlas_commit` | — | The primary write path — records changes and updates atlas entries inline |
+
+### Standalone Tools
+
+Each action also exists as its own tool (`atlas_search`, `atlas_lookup`, `atlas_impact`, etc.) for backward compatibility and clients that prefer granular tool lists.
 
 ### Change Tracking
 
 | Tool | Purpose |
 |------|---------|
-| `atlas_commit` | **The primary write path.** Records what changed (changelog) and updates the atlas entry inline in one call. The agent that just wrote the code provides its own extraction — higher quality than a cold re-extraction by a cheaper model. |
-| `atlas_log` | Write a changelog entry without updating the atlas extraction (changelog only) |
+| `atlas_commit` | Records what changed and updates the atlas entry inline — the agent provides its own extraction (highest quality since it just wrote the code) |
+| `atlas_log` | Write a changelog entry without updating the extraction |
 | `atlas_changelog` | Query and search the changelog — filter by file, cluster, date range, verification status, or semantic query |
-
-### Maintenance
-
-| Tool | Purpose |
-|------|---------|
-| `atlas_reindex` | Rebuild atlas data for the workspace — supports dry-run, full pipeline, pass2-only reruns, file-targeted re-extraction, and live progress tracking |
 
 ### Cross-Workspace Bridge
 
 | Tool | Purpose |
 |------|---------|
 | `atlas_bridge` | Search across ALL atlas databases on your machine with RRF fusion |
-| `atlas_bridge_list` | Discover all atlas workspaces available on your machine with file counts |
+| `atlas_bridge_list` | Discover all atlas workspaces available on your machine |
 | `atlas_bridge_lookup` | Look up a specific file from any workspace |
 
 ### Resource
 
 - **`atlas://context`** — auto-updated codebase context resource. Subscribe for automatic injection of relevant file knowledge, recent queries, and cluster summaries.
+
+## How It Works
+
+The atlas pipeline runs in 8 phases. The first three and last two are fully deterministic (no LLM needed):
+
+| Phase | Name | Deterministic? | What it does |
+|-------|------|---------------|--------------|
+| **Pass 0** | Import Graph | ✅ | Builds the import/export graph for the codebase |
+| **Pass 0-struct** | AST Structural | ✅ | Tree-sitter extracts symbols + structural edges (CALLS, EXTENDS, IMPLEMENTS, HAS_METHOD) for all supported languages |
+| **Pass 0-flow** | Data Flow | ✅ | Deterministic TS/JS data-flow heuristics — tracks event emitters, pub/sub, config propagation, and producer/consumer patterns |
+| **Pass 0.5** | Blurbs | ❌ | LLM generates concise one-line blurbs for each file |
+| **Pass 1** | Deep Extraction | ❌ | LLM produces structured extraction — purpose, public API, patterns, hazards, conventions, key types, data flows, dependencies |
+| **Embed** | Vectorize | ❌ | Stores vectors for semantic search |
+| **Pass 2** | Cross-References | ✅ | Deterministic heuristic cross-ref computation — queries the symbols/references tables from pass0-struct + pass0-flow, falls back to ripgrep for uncovered symbols. Produces per-symbol call sites, usage counts, and blast radius ratings |
+| **Pass 3** | Community Detection | ✅ | Leiden algorithm clusters files into hierarchical communities based on the structural edge graph. Produces named clusters like `pipeline/extraction` or `tools/query` |
+
+### Deterministic-Only Mode
+
+If no provider is configured, the pipeline skips passes 0.5, 1, and embed — but pass0-struct, pass0-flow, pass2, and pass3 all run, giving you structural symbols, edges, cross-references, and community clusters with zero API calls. Use `atlas_reindex phase=pass2` to recompute cross-references on demand.
+
+### Response-Embedded Guidance
+
+Tool responses include contextual `💡` hints based on the actual query results. For example:
+
+- `atlas_lookup` on a file with critical blast radius → *"⚠️ This file has high blast radius symbols. Run `atlas_graph action=impact` before modifying."*
+- `atlas_commit` after success → *"💡 If you changed exports or public API, run `atlas_admin action=flush` to refresh cross-references."*
+- `atlas_audit action=gaps` finding dead exports → *"💡 Consider removing unused exports, or run `atlas_admin action=reindex phase=pass2` if cross-refs are stale."*
+
+This makes the standalone MCP server self-guiding — no external orchestrator, hooks, or SOPs needed. The AI gets the right hint at the right moment, tailored to what it just found.
 
 ## MCP Client Setup
 
@@ -80,9 +115,7 @@ The init wizard walks you through the codebase path, workspace, provider, model,
       "args": ["tsx", "src/server.ts"],
       "cwd": "/path/to/atlas-mcp-server",
       "env": {
-        "ATLAS_DB_PATH": "/path/to/atlas-mcp-server/.atlas/atlas.sqlite",
         "ATLAS_SOURCE_ROOT": "/path/to/your/codebase",
-        "ATLAS_WORKSPACE": "your-workspace",
         "OPENAI_API_KEY": "..."
       }
     }
@@ -100,7 +133,6 @@ The init wizard walks you through the codebase path, workspace, provider, model,
       "args": ["tsx", "src/server.ts"],
       "cwd": "/path/to/atlas-mcp-server",
       "env": {
-        "ATLAS_DB_PATH": "/path/to/atlas-mcp-server/.atlas/atlas.sqlite",
         "ATLAS_SOURCE_ROOT": "/path/to/your/codebase",
         "ATLAS_WORKSPACE": "your-workspace"
       }
@@ -109,19 +141,24 @@ The init wizard walks you through the codebase path, workspace, provider, model,
 }
 ```
 
-## How It Works
+### Deterministic-Only (No Provider)
 
-The atlas pipeline runs in phases:
+```json
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "npx",
+      "args": ["tsx", "src/server.ts"],
+      "cwd": "/path/to/atlas-mcp-server",
+      "env": {
+        "ATLAS_SOURCE_ROOT": "/path/to/your/codebase"
+      }
+    }
+  }
+}
+```
 
-1. **Pass 0** — builds the import graph for the codebase.
-2. **Pass 0.5** — generates concise blurbs for each file.
-3. **Pass 1** — produces deep structured extraction (purpose, public API, patterns, hazards, conventions, key types, data flows, dependencies).
-4. **Pass 2** — adds cross-references and blast-radius analysis.
-5. **Embed** — stores vectors for semantic search.
-
-Search uses hybrid BM25 + vector ranking with RRF fusion, so both keyword and semantic queries work well.
-
-After the initial index, agents keep the atlas current by calling `atlas_commit` after editing files — the agent provides its own extraction inline (it has maximum context since it just wrote the code), and the atlas entry updates immediately with no background re-extraction needed.
+No API keys needed. Pass0-struct, pass0-flow, pass2, and pass3 all run deterministically. You get structural symbols, edges, cross-references, community clusters, and graph tools — just no blurbs, deep extractions, or embeddings.
 
 ## Configuration
 
@@ -133,6 +170,7 @@ After the initial index, agents keep the atlas current by calling `atlas_commit`
 | `--provider` | Choose `openai`, `anthropic`, `gemini`, or `ollama` |
 | `--concurrency` | Set batch size for init runs |
 | `--yes` | Skip interactive confirmation prompts |
+| `--force` | Delete existing database and rebuild from scratch |
 | `--phase pass2` | Run only pass 2 (cross-refs) during init |
 | `--file <path>` | Target specific files during init (repeatable) |
 
@@ -140,8 +178,8 @@ After the initial index, agents keep the atlas current by calling `atlas_commit`
 
 | Variable | Purpose |
 |----------|---------|
-| `ATLAS_DB_PATH` | Path to the SQLite database |
 | `ATLAS_SOURCE_ROOT` | Root directory of the codebase to index |
+| `ATLAS_DB_PATH` | Path to the SQLite database (defaults to `<source_root>/.atlas/atlas.sqlite`) |
 | `ATLAS_WORKSPACE` | Workspace name (defaults to directory basename) |
 | `ATLAS_PROVIDER` | Provider choice: `openai`, `anthropic`, `gemini`, `ollama` |
 | `ATLAS_MODEL` | Override the default chat model |
@@ -155,16 +193,30 @@ After the initial index, agents keep the atlas current by calling `atlas_commit`
 | `ATLAS_OLLAMA_EMBED_MODEL` | Override Ollama embedding model |
 | `ATLAS_SQLITE_VEC_EXTENSION` | Custom path to sqlite-vec extension |
 
+## Supported Languages
+
+| Language | Extensions | AST Extraction | Flow Analysis |
+|----------|-----------|----------------|---------------|
+| TypeScript | `.ts` | ✅ Symbols, edges, exports | ✅ Data flows, event patterns |
+| TSX | `.tsx` | ✅ | ✅ |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | ✅ | ✅ |
+| Python | `.py` | ✅ Symbols, edges, exports | — |
+| Go | `.go` | ✅ Symbols, edges, exports | — |
+| Rust | `.rs` | ✅ Symbols, edges, exports | — |
+| Java | `.java` | ✅ Symbols, edges, exports (with nested class support) | — |
+
+All languages get structural AST extraction via tree-sitter (symbols, edges, exports). TypeScript and JavaScript additionally get deterministic data-flow analysis.
+
 ## Architecture
 
-Think of Atlas as a codebase brain:
-
-- The **database** stores structured file knowledge — extractions, embeddings, changelogs, and cross-references in SQLite with sqlite-vec for vector search.
-- The **providers** generate blurbs, extractions, and embeddings via OpenAI, Anthropic, Gemini, or Ollama.
-- The **MCP server** exposes search, lookup, commit, and bridge tools over stdio.
-- The **`atlas://context` resource** injects live codebase context into MCP clients automatically.
-- The **file watcher** detects changes and flags stale entries for re-extraction.
-- The **bridge** discovers sibling atlas databases on disk for cross-workspace search.
+- **SQLite + sqlite-vec** — structured file knowledge, embeddings, changelogs, cross-references, symbols, references, and community clusters all in one portable database
+- **Tree-sitter** — native AST parsing for 7 languages via lazy-loaded grammar singletons
+- **Providers** — generate blurbs, extractions, and embeddings via OpenAI, Anthropic, Gemini, or Ollama
+- **MCP server** — exposes all tools over stdio, compatible with any MCP client
+- **`atlas://context` resource** — injects live codebase context into MCP clients automatically
+- **File watcher** — detects changes and re-extracts modified files in real time
+- **Bridge** — discovers sibling atlas databases on disk for cross-workspace search
+- **Leiden clustering** — groups files into hierarchical communities based on structural edges for natural navigation
 
 ## License
 

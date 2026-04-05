@@ -35,6 +35,120 @@ function atlasContent(format: 'json' | 'text' | undefined, payload: Record<strin
   };
 }
 
+export interface AtlasHistoryArgs {
+  file_path?: string;
+  filePath?: string;
+  cluster?: string;
+  author_engine?: string;
+  authorEngine?: string;
+  author_instance_id?: string;
+  authorInstanceId?: string;
+  verification_status?: string;
+  verificationStatus?: string;
+  breaking_changes?: boolean;
+  since?: string;
+  until?: string;
+  workspace?: string;
+  limit?: number;
+  format?: 'json' | 'text';
+}
+
+type AtlasToolTextResult = {
+  content: Array<{ type: 'text'; text: string }>;
+};
+
+export async function runHistoryTool(runtime: AtlasRuntime, {
+  file_path,
+  filePath,
+  cluster,
+  author_engine,
+  authorEngine,
+  author_instance_id,
+  authorInstanceId,
+  verification_status,
+  verificationStatus,
+  breaking_changes,
+  since,
+  until,
+  workspace,
+  limit,
+  format,
+}: AtlasHistoryArgs): Promise<AtlasToolTextResult> {
+  const context = resolveDbContext(runtime, workspace);
+  if (!context) {
+    return { content: [{ type: 'text', text: `Workspace "${workspace}" not found.` }] };
+  }
+
+  const ws = context.workspace;
+  const file = file_path ?? filePath;
+  const authorEngineValue = author_engine ?? authorEngine;
+  const authorInstanceValue = author_instance_id ?? authorInstanceId;
+  const verificationValue = verification_status ?? verificationStatus;
+  const maxResults = Math.max(1, Math.min(limit ?? 20, 200));
+
+  let entries = queryAtlasChangelog(context.db, {
+    workspace: ws,
+    file,
+    cluster,
+    since,
+    until,
+    verification_status: verificationValue,
+    breaking_only: breaking_changes,
+    limit: Math.max(maxResults * 4, 100),
+  });
+
+  if (authorEngineValue) {
+    entries = entries.filter((entry) => entry.author_engine === authorEngineValue);
+  }
+  if (authorInstanceValue) {
+    entries = entries.filter((entry) => entry.author_instance_id === authorInstanceValue);
+  }
+
+  const sliced = entries
+    .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id)
+    .slice(0, maxResults);
+
+  const verificationBreakdown = new Map<string, number>();
+  for (const entry of sliced) {
+    verificationBreakdown.set(entry.verification_status, (verificationBreakdown.get(entry.verification_status) ?? 0) + 1);
+  }
+
+  const lines: string[] = ['## Atlas History', ''];
+  if (sliced.length === 0) {
+    lines.push('- No changelog entries match the current filters.');
+  } else {
+    lines.push(...sliced.map((entry) => formatEntry(entry)));
+  }
+  lines.push('');
+  lines.push('### Summary');
+  lines.push(`- Workspace: ${ws}`);
+  lines.push(`- Entries: ${sliced.length}`);
+  if (verificationBreakdown.size > 0) {
+    lines.push(`- Verification: ${[...verificationBreakdown.entries()].map(([key, value]) => `${key}=${value}`).join(', ')}`);
+  }
+
+  return atlasContent(format, {
+    ok: true,
+    workspace: ws,
+    filters: {
+      file_path: file ?? null,
+      cluster: cluster ?? null,
+      author_engine: authorEngineValue ?? null,
+      author_instance_id: authorInstanceValue ?? null,
+      verification_status: verificationValue ?? null,
+      since: since ?? null,
+      until: until ?? null,
+      breaking_changes: typeof breaking_changes === 'boolean' ? breaking_changes : null,
+      limit: maxResults,
+    },
+    entries: sliced,
+    summary: {
+      entry_count: sliced.length,
+      verification_breakdown: Object.fromEntries(verificationBreakdown.entries()),
+    },
+  }, lines.join('\n'));
+}
+
 export function registerHistoryTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_history',
@@ -56,112 +170,6 @@ export function registerHistoryTool(server: McpServer, runtime: AtlasRuntime): v
       limit: z.number().int().min(1).max(200).optional(),
       format: z.enum(['json', 'text']).optional().describe('Output format: json for structured data, text for human-readable (default: text)'),
     },
-    async ({
-      file_path,
-      filePath,
-      cluster,
-      author_engine,
-      authorEngine,
-      author_instance_id,
-      authorInstanceId,
-      verification_status,
-      verificationStatus,
-      breaking_changes,
-      since,
-      until,
-      workspace,
-      limit,
-      format,
-    }: {
-      file_path?: string;
-      filePath?: string;
-      cluster?: string;
-      author_engine?: string;
-      authorEngine?: string;
-      author_instance_id?: string;
-      authorInstanceId?: string;
-      verification_status?: string;
-      verificationStatus?: string;
-      breaking_changes?: boolean;
-      since?: string;
-      until?: string;
-      workspace?: string;
-      limit?: number;
-      format?: 'json' | 'text';
-    }) => {
-      const context = resolveDbContext(runtime, workspace);
-      if (!context) {
-        return { content: [{ type: 'text', text: `Workspace "${workspace}" not found.` }] };
-      }
-
-      const ws = context.workspace;
-      const file = file_path ?? filePath;
-      const authorEngineValue = author_engine ?? authorEngine;
-      const authorInstanceValue = author_instance_id ?? authorInstanceId;
-      const verificationValue = verification_status ?? verificationStatus;
-      const maxResults = Math.max(1, Math.min(limit ?? 20, 200));
-
-      let entries = queryAtlasChangelog(context.db, {
-        workspace: ws,
-        file,
-        cluster,
-        since,
-        until,
-        verification_status: verificationValue,
-        breaking_only: breaking_changes,
-        limit: Math.max(maxResults * 4, 100),
-      });
-
-      if (authorEngineValue) {
-        entries = entries.filter((entry) => entry.author_engine === authorEngineValue);
-      }
-      if (authorInstanceValue) {
-        entries = entries.filter((entry) => entry.author_instance_id === authorInstanceValue);
-      }
-
-      const sliced = entries
-        .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id)
-        .slice(0, maxResults);
-
-      const verificationBreakdown = new Map<string, number>();
-      for (const entry of sliced) {
-        verificationBreakdown.set(entry.verification_status, (verificationBreakdown.get(entry.verification_status) ?? 0) + 1);
-      }
-
-      const lines: string[] = ['## Atlas History', ''];
-      if (sliced.length === 0) {
-        lines.push('- No changelog entries match the current filters.');
-      } else {
-        lines.push(...sliced.map((entry) => formatEntry(entry)));
-      }
-      lines.push('');
-      lines.push('### Summary');
-      lines.push(`- Workspace: ${ws}`);
-      lines.push(`- Entries: ${sliced.length}`);
-      if (verificationBreakdown.size > 0) {
-        lines.push(`- Verification: ${[...verificationBreakdown.entries()].map(([key, value]) => `${key}=${value}`).join(', ')}`);
-      }
-
-      return atlasContent(format, {
-        ok: true,
-        workspace: ws,
-        filters: {
-          file_path: file ?? null,
-          cluster: cluster ?? null,
-          author_engine: authorEngineValue ?? null,
-          author_instance_id: authorInstanceValue ?? null,
-          verification_status: verificationValue ?? null,
-          since: since ?? null,
-          until: until ?? null,
-          breaking_changes: typeof breaking_changes === 'boolean' ? breaking_changes : null,
-          limit: maxResults,
-        },
-        entries: sliced,
-        summary: {
-          entry_count: sliced.length,
-          verification_breakdown: Object.fromEntries(verificationBreakdown.entries()),
-        },
-      }, lines.join('\n'));
-    },
+    async (args: AtlasHistoryArgs) => runHistoryTool(runtime, args),
   );
 }

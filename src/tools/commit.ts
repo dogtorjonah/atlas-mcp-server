@@ -65,7 +65,13 @@ const apiEntrySchema = z.object({
 export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_commit',
-    'Record changelog rationale and update the atlas entry for a file in one call. Combines changelog logging with inline atlas metadata updates (purpose, public_api, conventions, hazards, patterns, etc.). Use after editing a file to keep the atlas current.',
+    [
+      'Strategic post-edit tool for recording why a file changed and updating its Atlas record in the same call.',
+      'Use atlas_commit after a reviewed edit when you want the Atlas to stay aligned with the code without waiting for a cold re-extraction pass.',
+      'What it gives you: a durable changelog entry for the change rationale plus an inline update to the file atlas entry, including purpose, public API, conventions, key types, data flows, hazards, patterns, and dependency metadata. This is the right tool when the coding agent has the freshest understanding of the file and should write that knowledge back immediately.',
+      'Workflow hints: call atlas_commit after review PASS and before releasing file ownership; use it for focused metadata corrections after refactors, API changes, or hazard updates; include the most important atlas fields you actually changed instead of trying to restate the whole file from scratch.',
+      'This matters even more now because Atlas consumers rely on richer pipeline outputs such as AST-verified structure, deterministic flow edges, heuristic cross-reference context, and community clustering. atlas_commit keeps the human and machine rationale attached to those evolving graph facts.',
+    ].join('\n'),
     {
       // ── Changelog fields (same as atlas_log) ──
       file_path: z.string().min(1),
@@ -280,10 +286,16 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       parts.push(`Atlas entry updated inline: ${fields.join(', ')}`);
 
       return {
-        content: [{
-          type: 'text' as const,
-          text: parts.join('\n'),
-        }],
+        content: [
+          {
+            type: 'text' as const,
+            text: parts.join('\n'),
+          },
+          {
+            type: 'text' as const,
+            text: '💡 If you changed exports or public API, run `atlas_admin action=flush files=[...]` to refresh cross-references for downstream consumers.',
+          },
+        ],
       };
     },
   );

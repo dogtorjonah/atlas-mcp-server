@@ -94,6 +94,191 @@ function fallbackSeeds(rows: AtlasFileRecord[], task: string, limit: number): Ra
     .slice(0, limit);
 }
 
+export interface AtlasPlanContextArgs {
+  task: string;
+  workspace?: string;
+  limit?: number;
+  include_neighbors?: boolean;
+  includeNeighbors?: boolean;
+  neighbor_depth?: number;
+  neighborDepth?: number;
+  format?: 'json' | 'text';
+}
+
+type AtlasToolTextResult = {
+  content: Array<{ type: 'text'; text: string }>;
+};
+
+export async function runPlanContextTool(runtime: AtlasRuntime, {
+  task,
+  workspace,
+  limit,
+  include_neighbors,
+  includeNeighbors,
+  neighbor_depth,
+  neighborDepth,
+  format,
+}: AtlasPlanContextArgs): Promise<AtlasToolTextResult> {
+  const context = resolveDbContext(runtime, workspace);
+  if (!context) {
+    return { content: [{ type: 'text', text: `Workspace "${workspace}" not found.` }] };
+  }
+
+  const ws = context.workspace;
+  const db = context.db;
+  const out = resolveFormat(format);
+  const maxSeeds = Math.max(1, Math.min(50, Math.floor(limit ?? 15)));
+  const withNeighbors = include_neighbors ?? includeNeighbors ?? true;
+  const depth = Math.max(0, Math.min(2, Math.floor(neighbor_depth ?? neighborDepth ?? 1)));
+
+  const rows = listAtlasFiles(db, ws);
+  if (rows.length === 0) {
+    const text = `No atlas files found for workspace "${ws}".`;
+    return { content: [{ type: 'text', text: formatOutput(out, { ok: false, workspace: ws, message: text }, text) }] };
+  }
+
+  const candidateLimit = Math.max(maxSeeds * 3, 20);
+  const ftsHits = searchFts(db, ws, task, candidateLimit).map((hit) => ({ file: hit.file, score: hit.score }));
+
+  let vectorHits: Array<{ file: AtlasFileRecord; score: number }> = [];
+  if (runtime.provider) {
+    try {
+      const embedding = await runtime.provider.embedText(task);
+      vectorHits = searchVector(db, ws, embedding, candidateLimit).map((hit) => ({ file: hit.file, score: hit.score }));
+    } catch {
+      vectorHits = [];
+    }
+  }
+
+  let seeds = fuseSeeds(ftsHits, vectorHits, maxSeeds);
+  if (seeds.length === 0) {
+    seeds = fallbackSeeds(rows, task, maxSeeds);
+  }
+  if (seeds.length === 0) {
+    const text = `No atlas context found for task "${task}" in workspace "${ws}".`;
+    return { content: [{ type: 'text', text: formatOutput(out, { ok: false, workspace: ws, task, seeds: [], context_files: [], message: text }, text) }] };
+  }
+
+  const rowByPath = new Map(rows.map((row) => [normalizePath(row.file_path), row]));
+  const outgoing = new Map<string, string[]>();
+  const incoming = new Map<string, string[]>();
+  for (const filePath of rowByPath.keys()) {
+    outgoing.set(filePath, []);
+    incoming.set(filePath, []);
+  }
+
+  for (const edge of listImportEdges(db, ws)) {
+    const src = normalizePath(edge.source_file);
+    const dst = normalizePath(edge.target_file);
+    if (!rowByPath.has(src) || !rowByPath.has(dst)) continue;
+    outgoing.get(src)?.push(dst);
+    incoming.get(dst)?.push(src);
+  }
+
+  const blastByPath = new Map<string, number>();
+  for (const filePath of rowByPath.keys()) {
+    blastByPath.set(filePath, (incoming.get(filePath)?.length ?? 0) + (outgoing.get(filePath)?.length ?? 0));
+  }
+
+  const contextEntries = new Map<string, ContextEntry>();
+  seeds.forEach((seed, index) => {
+    const key = normalizePath(seed.file.file_path);
+    contextEntries.set(key, {
+      file_path: seed.file.file_path,
+      context_source: 'seed',
+      why_included: `seed rank ${index + 1} from hybrid search`,
+      cluster: seed.file.cluster ?? null,
+      purpose: seed.file.purpose || seed.file.blurb || '',
+      hazards: seed.file.hazards ?? [],
+      patterns: seed.file.patterns ?? [],
+      loc: seed.file.loc ?? 0,
+      blast_radius: blastByPath.get(key) ?? 0,
+      score: seed.score,
+    });
+  });
+
+  if (withNeighbors && depth > 0) {
+    const queue = seeds.map((seed) => ({ path: normalizePath(seed.file.file_path), depth: 0, via: seed.file.file_path }));
+    const expanded = new Set(queue.map((entry) => entry.path));
+
+    while (queue.length > 0 && contextEntries.size < 60) {
+      const current = queue.shift();
+      if (!current || current.depth >= depth) continue;
+
+      const neighbors = [
+        ...(outgoing.get(current.path) ?? []).map((path) => ({ path, relation: 'imports' as const })),
+        ...(incoming.get(current.path) ?? []).map((path) => ({ path, relation: 'importer' as const })),
+      ].slice(0, 50);
+
+      for (const neighbor of neighbors) {
+        const row = rowByPath.get(neighbor.path);
+        if (!row) continue;
+
+        if (!contextEntries.has(neighbor.path)) {
+          contextEntries.set(neighbor.path, {
+            file_path: row.file_path,
+            context_source: 'neighbor',
+            why_included: `${neighbor.relation} of ${current.via}`,
+            cluster: row.cluster ?? null,
+            purpose: row.purpose || row.blurb || '',
+            hazards: row.hazards ?? [],
+            patterns: row.patterns ?? [],
+            loc: row.loc ?? 0,
+            blast_radius: blastByPath.get(neighbor.path) ?? 0,
+            score: 0.01,
+          });
+        }
+
+        if (!expanded.has(neighbor.path)) {
+          expanded.add(neighbor.path);
+          queue.push({ path: neighbor.path, depth: current.depth + 1, via: row.file_path });
+        }
+
+        if (contextEntries.size >= 60) break;
+      }
+    }
+  }
+
+  const orderedContext = [...contextEntries.values()]
+    .sort((a, b) => {
+      if (a.context_source !== b.context_source) return a.context_source === 'seed' ? -1 : 1;
+      return b.score - a.score || a.file_path.localeCompare(b.file_path);
+    });
+
+  const text = [
+    '## Atlas Plan Context',
+    '',
+    `Task: ${task}`,
+    '',
+    `Seeds (${seeds.length}):`,
+    ...seeds.map((seed, index) => `${index + 1}. ${seed.file.file_path} (${(seed.score * 100).toFixed(1)}%)`),
+    '',
+    `Expanded context (${orderedContext.length}):`,
+    ...orderedContext.map((entry) => `- ${entry.file_path} [${entry.context_source}] blast=${entry.blast_radius} | ${entry.why_included}${entry.purpose ? `\n  ${entry.purpose}` : ''}`),
+  ].join('\n');
+
+  const payload = {
+    ok: true,
+    workspace: ws,
+    task,
+    limit: maxSeeds,
+    include_neighbors: withNeighbors,
+    neighbor_depth: depth,
+    seeds: seeds.map((seed) => ({
+      file_path: seed.file.file_path,
+      score: Number(seed.score.toFixed(6)),
+      cluster: seed.file.cluster ?? null,
+      purpose: seed.file.purpose || seed.file.blurb || '',
+    })),
+    context_files: orderedContext,
+    summary: {
+      seed_count: seeds.length,
+      context_count: orderedContext.length,
+    },
+  };
+  return { content: [{ type: 'text', text: formatOutput(out, payload, text) }] };
+}
+
 export function registerPlanContextTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_plan_context',
@@ -108,183 +293,6 @@ export function registerPlanContextTool(server: McpServer, runtime: AtlasRuntime
       neighborDepth: z.number().int().min(0).max(2).optional(),
       format: z.enum(['json', 'text']).optional().describe('Output format: json for structured data, text for human-readable (default: text)'),
     },
-    async ({
-      task,
-      workspace,
-      limit,
-      include_neighbors,
-      includeNeighbors,
-      neighbor_depth,
-      neighborDepth,
-      format,
-    }: {
-      task: string;
-      workspace?: string;
-      limit?: number;
-      include_neighbors?: boolean;
-      includeNeighbors?: boolean;
-      neighbor_depth?: number;
-      neighborDepth?: number;
-      format?: 'json' | 'text';
-    }) => {
-      const context = resolveDbContext(runtime, workspace);
-      if (!context) {
-        return { content: [{ type: 'text', text: `Workspace "${workspace}" not found.` }] };
-      }
-
-      const ws = context.workspace;
-      const db = context.db;
-      const out = resolveFormat(format);
-      const maxSeeds = Math.max(1, Math.min(50, Math.floor(limit ?? 15)));
-      const withNeighbors = include_neighbors ?? includeNeighbors ?? true;
-      const depth = Math.max(0, Math.min(2, Math.floor(neighbor_depth ?? neighborDepth ?? 1)));
-
-      const rows = listAtlasFiles(db, ws);
-      if (rows.length === 0) {
-        const text = `No atlas files found for workspace "${ws}".`;
-        return { content: [{ type: 'text', text: formatOutput(out, { ok: false, workspace: ws, message: text }, text) }] };
-      }
-
-      const candidateLimit = Math.max(maxSeeds * 3, 20);
-      const ftsHits = searchFts(db, ws, task, candidateLimit).map((hit) => ({ file: hit.file, score: hit.score }));
-
-      let vectorHits: Array<{ file: AtlasFileRecord; score: number }> = [];
-      if (runtime.provider) {
-        try {
-          const embedding = await runtime.provider.embedText(task);
-          vectorHits = searchVector(db, ws, embedding, candidateLimit).map((hit) => ({ file: hit.file, score: hit.score }));
-        } catch {
-          vectorHits = [];
-        }
-      }
-
-      let seeds = fuseSeeds(ftsHits, vectorHits, maxSeeds);
-      if (seeds.length === 0) {
-        seeds = fallbackSeeds(rows, task, maxSeeds);
-      }
-      if (seeds.length === 0) {
-        const text = `No atlas context found for task "${task}" in workspace "${ws}".`;
-        return { content: [{ type: 'text', text: formatOutput(out, { ok: false, workspace: ws, task, seeds: [], context_files: [], message: text }, text) }] };
-      }
-
-      const rowByPath = new Map(rows.map((row) => [normalizePath(row.file_path), row]));
-      const outgoing = new Map<string, string[]>();
-      const incoming = new Map<string, string[]>();
-      for (const filePath of rowByPath.keys()) {
-        outgoing.set(filePath, []);
-        incoming.set(filePath, []);
-      }
-
-      for (const edge of listImportEdges(db, ws)) {
-        const src = normalizePath(edge.source_file);
-        const dst = normalizePath(edge.target_file);
-        if (!rowByPath.has(src) || !rowByPath.has(dst)) continue;
-        outgoing.get(src)?.push(dst);
-        incoming.get(dst)?.push(src);
-      }
-
-      const blastByPath = new Map<string, number>();
-      for (const filePath of rowByPath.keys()) {
-        blastByPath.set(filePath, (incoming.get(filePath)?.length ?? 0) + (outgoing.get(filePath)?.length ?? 0));
-      }
-
-      const contextEntries = new Map<string, ContextEntry>();
-      seeds.forEach((seed, index) => {
-        const key = normalizePath(seed.file.file_path);
-        contextEntries.set(key, {
-          file_path: seed.file.file_path,
-          context_source: 'seed',
-          why_included: `seed rank ${index + 1} from hybrid search`,
-          cluster: seed.file.cluster ?? null,
-          purpose: seed.file.purpose || seed.file.blurb || '',
-          hazards: seed.file.hazards ?? [],
-          patterns: seed.file.patterns ?? [],
-          loc: seed.file.loc ?? 0,
-          blast_radius: blastByPath.get(key) ?? 0,
-          score: seed.score,
-        });
-      });
-
-      if (withNeighbors && depth > 0) {
-        const queue = seeds.map((seed) => ({ path: normalizePath(seed.file.file_path), depth: 0, via: seed.file.file_path }));
-        const expanded = new Set(queue.map((entry) => entry.path));
-
-        while (queue.length > 0 && contextEntries.size < 60) {
-          const current = queue.shift();
-          if (!current || current.depth >= depth) continue;
-
-          const neighbors = [
-            ...(outgoing.get(current.path) ?? []).map((path) => ({ path, relation: 'imports' as const })),
-            ...(incoming.get(current.path) ?? []).map((path) => ({ path, relation: 'importer' as const })),
-          ].slice(0, 50);
-
-          for (const neighbor of neighbors) {
-            const row = rowByPath.get(neighbor.path);
-            if (!row) continue;
-
-            if (!contextEntries.has(neighbor.path)) {
-              contextEntries.set(neighbor.path, {
-                file_path: row.file_path,
-                context_source: 'neighbor',
-                why_included: `${neighbor.relation} of ${current.via}`,
-                cluster: row.cluster ?? null,
-                purpose: row.purpose || row.blurb || '',
-                hazards: row.hazards ?? [],
-                patterns: row.patterns ?? [],
-                loc: row.loc ?? 0,
-                blast_radius: blastByPath.get(neighbor.path) ?? 0,
-                score: 0.01,
-              });
-            }
-
-            if (!expanded.has(neighbor.path)) {
-              expanded.add(neighbor.path);
-              queue.push({ path: neighbor.path, depth: current.depth + 1, via: row.file_path });
-            }
-
-            if (contextEntries.size >= 60) break;
-          }
-        }
-      }
-
-      const orderedContext = [...contextEntries.values()]
-        .sort((a, b) => {
-          if (a.context_source !== b.context_source) return a.context_source === 'seed' ? -1 : 1;
-          return b.score - a.score || a.file_path.localeCompare(b.file_path);
-        });
-
-      const text = [
-        '## Atlas Plan Context',
-        '',
-        `Task: ${task}`,
-        '',
-        `Seeds (${seeds.length}):`,
-        ...seeds.map((seed, index) => `${index + 1}. ${seed.file.file_path} (${(seed.score * 100).toFixed(1)}%)`),
-        '',
-        `Expanded context (${orderedContext.length}):`,
-        ...orderedContext.map((entry) => `- ${entry.file_path} [${entry.context_source}] blast=${entry.blast_radius} | ${entry.why_included}${entry.purpose ? `\n  ${entry.purpose}` : ''}`),
-      ].join('\n');
-
-      const payload = {
-        ok: true,
-        workspace: ws,
-        task,
-        limit: maxSeeds,
-        include_neighbors: withNeighbors,
-        neighbor_depth: depth,
-        seeds: seeds.map((seed) => ({
-          file_path: seed.file.file_path,
-          score: Number(seed.score.toFixed(6)),
-          cluster: seed.file.cluster ?? null,
-          purpose: seed.file.purpose || seed.file.blurb || '',
-        })),
-        context_files: orderedContext,
-        summary: {
-          seed_count: seeds.length,
-          context_count: orderedContext.length,
-        },
-      };
-      return { content: [{ type: 'text', text: formatOutput(out, payload, text) }] };
-    },
+    async (args: AtlasPlanContextArgs) => runPlanContextTool(runtime, args),
   );
 }

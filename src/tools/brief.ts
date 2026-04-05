@@ -51,6 +51,43 @@ function topConsumers(row: AtlasFileRecord): Array<{ file: string; count: number
     .map(([file, count]) => ({ file, count }));
 }
 
+export interface AtlasBriefArgs {
+  filePath: string;
+  workspace?: string;
+}
+
+type AtlasToolTextResult = {
+  content: Array<{ type: 'text'; text: string }>;
+};
+
+export async function runBriefTool(runtime: AtlasRuntime, { filePath, workspace }: AtlasBriefArgs): Promise<AtlasToolTextResult> {
+  const context = resolveWorkspace(runtime, workspace);
+  if (!context) {
+    return { content: [{ type: 'text', text: `Workspace "${workspace}" not found.` }] };
+  }
+
+  const row = getAtlasFile(context.db, context.workspace, filePath);
+  if (!row) {
+    return { content: [{ type: 'text', text: `No atlas row found for ${filePath}.` }] };
+  }
+
+  const purpose = truncateOneLine(row.purpose || row.blurb || '(no purpose)');
+  const api = summarizeApi(row);
+  const consumers = topConsumers(row);
+  const consumersLine = consumers.length > 0
+    ? consumers.map((c) => `${c.file} (${c.count})`).join(', ')
+    : '(none)';
+
+  const text = [
+    `# ${row.file_path}`,
+    `Purpose: ${purpose}`,
+    `API: ${api}`,
+    `Top consumers: ${consumersLine}`,
+  ].join('\n');
+
+  return { content: [{ type: 'text', text }] };
+}
+
 export function registerBriefTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_brief',
@@ -59,32 +96,6 @@ export function registerBriefTool(server: McpServer, runtime: AtlasRuntime): voi
       filePath: z.string().min(1),
       workspace: z.string().optional(),
     },
-    async ({ filePath, workspace }: { filePath: string; workspace?: string }) => {
-      const context = resolveWorkspace(runtime, workspace);
-      if (!context) {
-        return { content: [{ type: 'text', text: `Workspace "${workspace}" not found.` }] };
-      }
-
-      const row = getAtlasFile(context.db, context.workspace, filePath);
-      if (!row) {
-        return { content: [{ type: 'text', text: `No atlas row found for ${filePath}.` }] };
-      }
-
-      const purpose = truncateOneLine(row.purpose || row.blurb || '(no purpose)');
-      const api = summarizeApi(row);
-      const consumers = topConsumers(row);
-      const consumersLine = consumers.length > 0
-        ? consumers.map((c) => `${c.file} (${c.count})`).join(', ')
-        : '(none)';
-
-      const text = [
-        `# ${row.file_path}`,
-        `Purpose: ${purpose}`,
-        `API: ${api}`,
-        `Top consumers: ${consumersLine}`,
-      ].join('\n');
-
-      return { content: [{ type: 'text', text }] };
-    },
+    async (args: AtlasBriefArgs) => runBriefTool(runtime, args),
   );
 }

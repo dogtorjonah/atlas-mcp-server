@@ -12,6 +12,9 @@ import { runPass0, type Pass0FileInfo } from './pass0.js';
 import { runPass05 } from './pass05.js';
 import { runPass1 } from './pass1.js';
 import { persistPass2CrossRefs, runPass2 } from './pass2.js';
+import { runPass0Struct } from './pass0-struct.js';
+import { runPass0Flow } from './pass0-flow.js';
+import { runCommunityDetection } from './community.js';
 import { createPhaseProgressReporter } from './progress.js';
 
 function createPipelineProvider(config: AtlasServerConfig): AtlasProvider | undefined {
@@ -71,7 +74,7 @@ interface BatchPipelineContext {
   force: boolean;
 }
 
-type BatchPhaseKey = 'pass 0.5' | 'pass 1' | 'embed' | 'pass 2';
+type BatchPhaseKey = 'pass 0-struct' | 'pass 0-flow' | 'pass 0.5' | 'pass 1' | 'embed' | 'pass 2' | 'pass 3';
 
 const RESCUE_TRUNCATION_LIMITS = [6000, 3000] as const;
 
@@ -378,9 +381,9 @@ function buildDefaultCrossRefs(file: Pass0FileInfo): AtlasCrossRefs {
 
 /**
  * Phase ordering for resume comparison.
- * 'none' < 'pass05' < 'pass1' < 'embed' < 'pass2'
+ * 'none' < 'pass0struct' < 'pass05' < 'pass1' < 'embed' < 'pass2'
  */
-const PHASE_ORDER = ['none', 'pass05', 'pass1', 'embed', 'pass2'] as const;
+const PHASE_ORDER = ['none', 'pass0struct', 'pass05', 'pass1', 'embed', 'pass2'] as const;
 type PhaseLevel = (typeof PHASE_ORDER)[number];
 interface Pass2OnlySelection {
   requestedCount: number;
@@ -486,7 +489,6 @@ async function runPass2OnlyBatch(
   await runPhaseBatch('pass 2', 'Cross-refs', selection.eligible, context, async (file) => {
     const pass2 = await runPass2([file], {
       sourceRoot: context.rootDir,
-      provider: context.provider,
       db: context.db,
       workspace: context.workspace,
     });
@@ -524,16 +526,19 @@ async function runSequentialPipelineBatch(
   const startedAt = new Date().toISOString();
 
   interface PhaseCounter { total: number; completed: number; failed: number; done: boolean }
+  const cStruct: PhaseCounter = { total: 0, completed: 0, failed: 0, done: false };
+  const cFlow: PhaseCounter = { total: 0, completed: 0, failed: 0, done: false };
   const c05: PhaseCounter = { total: 0, completed: 0, failed: 0, done: false };
   const c1: PhaseCounter  = { total: 0, completed: 0, failed: 0, done: false };
   const cem: PhaseCounter = { total: 0, completed: 0, failed: 0, done: false };
   const c2: PhaseCounter  = { total: 0, completed: 0, failed: 0, done: false };
+  const c3: PhaseCounter  = { total: 0, completed: 0, failed: 0, done: false };
 
   function writeStatus(currentPhase: string): void {
     try {
       writeFileSync(statusPath, JSON.stringify({
         currentPhase, startedAt,
-        phases: { 'pass 0.5': c05, 'pass 1': c1, 'embed': cem, 'pass 2': c2 },
+        phases: { 'pass 0-struct': cStruct, 'pass 0-flow': cFlow, 'pass 0.5': c05, 'pass 1': c1, 'embed': cem, 'pass 2': c2, 'pass 3': c3 },
       }), 'utf8');
     } catch { /* ignore write failures */ }
   }
@@ -565,6 +570,59 @@ async function runSequentialPipelineBatch(
     }
   }
 
+  // ---- Pass 0 Structural (deterministic AST analysis) ----
+  // Always runs for all non-failed files — it's deterministic, fast (no LLM),
+  // and idempotent (deletes + reinserts AST rows per file).
+  const structFiles = files.filter((file) => !context.failedFiles.has(file.filePath));
+  cStruct.total = structFiles.length;
+  writeStatus('pass 0-struct');
+  if (structFiles.length > 0) {
+    try {
+      const structResult = await runPass0Struct(
+        structFiles,
+        context.db,
+        context.workspace,
+        context.rootDir,
+      );
+      cStruct.completed = structResult.filesProcessed;
+      cStruct.failed = structResult.filesSkipped;
+      console.log(
+        `[atlas-init] ${batchName}/struct: ${structResult.symbolsExtracted} symbols, `
+        + `${structResult.edgesExtracted} edges from ${structResult.filesProcessed} files`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[atlas-init] ${batchName}/struct: failed — ${msg}`);
+    }
+  }
+  cStruct.done = true;
+
+  // ---- Pass 0 Flow (deterministic TS/JS flow heuristics) ----
+  // Runs immediately after pass0-struct so it can reuse the symbol table written there.
+  const flowFiles = files.filter((file) => !context.failedFiles.has(file.filePath));
+  cFlow.total = flowFiles.length;
+  writeStatus('pass 0-flow');
+  if (flowFiles.length > 0) {
+    try {
+      const flowResult = await runPass0Flow(
+        flowFiles,
+        context.db,
+        context.workspace,
+        context.rootDir,
+      );
+      cFlow.completed = flowResult.filesProcessed;
+      cFlow.failed = flowResult.filesSkipped;
+      console.log(
+        `[atlas-init] ${batchName}/flow: ${flowResult.edgesExtracted} edges from ${flowResult.filesProcessed} files`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[atlas-init] ${batchName}/flow: failed — ${msg}`);
+    }
+  }
+  cFlow.done = true;
+
+  // ---- Pass 0.5 (LLM blurbs) ----
   const pass05Files = files.filter((file) => {
     if (context.failedFiles.has(file.filePath)) return false;
     // Skip if this file already completed pass05 or later
@@ -674,7 +732,6 @@ async function runSequentialPipelineBatch(
 
     const pass2 = await runPass2([file], {
       sourceRoot: context.rootDir,
-      provider: context.provider,
       db: context.db,
       workspace: context.workspace,
     });
@@ -688,6 +745,19 @@ async function runSequentialPipelineBatch(
     refreshAtlasRecord(context, file.filePath);
   }, makeOnProgress(c2, 'pass 2'));
   c2.done = true;
+
+  const pass3Files = files.length > 0 ? [files[0]!] : [];
+  c3.total = pass3Files.length;
+  writeStatus('pass 3');
+  await runPhaseBatch('pass 3', 'Communities', pass3Files, context, async () => {
+    const result = runCommunityDetection(context.db, context.workspace);
+    console.log(
+      `[atlas-init] ${batchName}/communities: ${result.clustersFound} clusters, `
+      + `${result.filesAssigned} files assigned, Q=${result.modularity.toFixed(4)}, `
+      + `${result.iterations} iterations`,
+    );
+  }, makeOnProgress(c3, 'pass 3'));
+  c3.done = true;
 
   // Remove status file — pipeline complete
   try { unlinkSync(statusPath); } catch { /* ignore */ }

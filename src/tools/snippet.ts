@@ -119,6 +119,64 @@ function findSymbolRange(source: string, symbol: string): SymbolRange | null {
   return { startLine, endLine };
 }
 
+export interface AtlasSnippetArgs {
+  filePath: string;
+  symbol?: string;
+  startLine?: number;
+  endLine?: number;
+  workspace?: string;
+}
+
+type AtlasToolTextResult = {
+  content: Array<{ type: 'text'; text: string }>;
+};
+
+export async function runSnippetTool(runtime: AtlasRuntime, {
+  filePath,
+  symbol,
+  startLine,
+  endLine,
+  workspace,
+}: AtlasSnippetArgs): Promise<AtlasToolTextResult> {
+  const context = resolveWorkspace(runtime, workspace);
+  if (!context) {
+    return { content: [{ type: 'text', text: `Workspace "${workspace}" not found.` }] };
+  }
+
+  const absolutePath = path.join(context.sourceRoot, filePath);
+  let source: string;
+  try {
+    source = await fs.readFile(absolutePath, 'utf8');
+  } catch {
+    return { content: [{ type: 'text', text: `Unable to read ${filePath}.` }] };
+  }
+
+  const lines = source.split('\n');
+  let from = startLine;
+  let to = endLine;
+
+  if (symbol && !from && !to) {
+    const range = findSymbolRange(source, symbol);
+    if (!range) {
+      return { content: [{ type: 'text', text: `Symbol "${symbol}" not found in ${filePath}.` }] };
+    }
+    from = range.startLine;
+    to = range.endLine;
+  }
+
+  const start = clampLine(from ?? 1, lines.length);
+  const end = clampLine(to ?? Math.min(lines.length, start + 80), lines.length);
+  const resolvedEnd = Math.max(start, end);
+  const snippet = lines.slice(start - 1, resolvedEnd).join('\n');
+
+  return {
+    content: [{
+      type: 'text',
+      text: `# Snippet: ${filePath}:${start}-${resolvedEnd}${symbol ? ` (${symbol})` : ''}\n\`\`\`\n${snippet}\n\`\`\``,
+    }],
+  };
+}
+
 export function registerSnippetTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_snippet',
@@ -130,56 +188,6 @@ export function registerSnippetTool(server: McpServer, runtime: AtlasRuntime): v
       endLine: z.number().int().min(1).optional(),
       workspace: z.string().optional(),
     },
-    async ({
-      filePath,
-      symbol,
-      startLine,
-      endLine,
-      workspace,
-    }: {
-      filePath: string;
-      symbol?: string;
-      startLine?: number;
-      endLine?: number;
-      workspace?: string;
-    }) => {
-      const context = resolveWorkspace(runtime, workspace);
-      if (!context) {
-        return { content: [{ type: 'text', text: `Workspace "${workspace}" not found.` }] };
-      }
-
-      const absolutePath = path.join(context.sourceRoot, filePath);
-      let source: string;
-      try {
-        source = await fs.readFile(absolutePath, 'utf8');
-      } catch {
-        return { content: [{ type: 'text', text: `Unable to read ${filePath}.` }] };
-      }
-
-      const lines = source.split('\n');
-      let from = startLine;
-      let to = endLine;
-
-      if (symbol && !from && !to) {
-        const range = findSymbolRange(source, symbol);
-        if (!range) {
-          return { content: [{ type: 'text', text: `Symbol "${symbol}" not found in ${filePath}.` }] };
-        }
-        from = range.startLine;
-        to = range.endLine;
-      }
-
-      const start = clampLine(from ?? 1, lines.length);
-      const end = clampLine(to ?? Math.min(lines.length, start + 80), lines.length);
-      const resolvedEnd = Math.max(start, end);
-      const snippet = lines.slice(start - 1, resolvedEnd).join('\n');
-
-      return {
-        content: [{
-          type: 'text',
-          text: `# Snippet: ${filePath}:${start}-${resolvedEnd}${symbol ? ` (${symbol})` : ''}\n\`\`\`\n${snippet}\n\`\`\``,
-        }],
-      };
-    },
+    async (args: AtlasSnippetArgs) => runSnippetTool(runtime, args),
   );
 }

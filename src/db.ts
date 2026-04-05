@@ -1011,7 +1011,10 @@ export function replaceReferencesForFile(
   sourceFile: string,
   crossRefs: AtlasCrossRefs | null,
 ): void {
-  const deleteStmt = db.prepare('DELETE FROM "references" WHERE workspace = ? AND source_file = ?');
+  // Only delete non-AST references — AST-sourced edges from pass0-struct are preserved
+  const deleteStmt = db.prepare(
+    `DELETE FROM "references" WHERE workspace = ? AND source_file = ? AND provenance != 'ast'`,
+  );
   const insertSymbolStmt = db.prepare(
     `INSERT INTO symbols (
        workspace, file_path, name, kind, exported, signature_hash, updated_at

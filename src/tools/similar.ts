@@ -88,6 +88,105 @@ function atlasContent(format: 'json' | 'text' | undefined, payload: Record<strin
   };
 }
 
+export interface AtlasSimilarArgs {
+  file_path?: string;
+  filePath?: string;
+  workspace?: string;
+  limit?: number;
+  min_score?: number;
+  minScore?: number;
+  format?: 'json' | 'text';
+}
+
+type AtlasToolTextResult = {
+  content: Array<{ type: 'text'; text: string }>;
+};
+
+export async function runSimilarTool(runtime: AtlasRuntime, {
+  file_path,
+  filePath,
+  workspace,
+  limit,
+  min_score,
+  minScore,
+  format,
+}: AtlasSimilarArgs): Promise<AtlasToolTextResult> {
+  const context = resolveDbContext(runtime, workspace);
+  if (!context) {
+    return { content: [{ type: 'text', text: `Workspace "${workspace}" not found.` }] };
+  }
+
+  const ws = context.workspace;
+  const targetFile = file_path ?? filePath;
+  if (!targetFile) {
+    return { content: [{ type: 'text', text: 'atlas_similar requires "file_path".' }] };
+  }
+
+  const seedRow = getAtlasFile(context.db, ws, targetFile);
+  if (!seedRow) {
+    return { content: [{ type: 'text', text: `No atlas row found for ${targetFile} in workspace "${ws}".` }] };
+  }
+
+  const maxResults = Math.max(1, Math.min(limit ?? 10, 50));
+  const minSimilarity = Math.max(0, Math.min(min_score ?? minScore ?? 0.5, 1));
+  const query = buildEmbeddingInput(seedRow) || `${seedRow.file_path}\n${seedRow.purpose || seedRow.blurb || ''}`;
+  const ftsResults = mapHitsToRanked(searchFts(context.db, ws, query, Math.max(maxResults * 3, 20)));
+
+  let vectorResults: RankedResult[] = [];
+  if (runtime.provider) {
+    try {
+      const embedding = await runtime.provider.embedText(query);
+      vectorResults = mapHitsToRanked(searchVector(context.db, ws, embedding, Math.max(maxResults * 3, 20)));
+    } catch {
+      // Non-fatal: FTS and fallback search still work.
+    }
+  }
+
+  let results = (ftsResults.length > 0 || vectorResults.length > 0)
+    ? fuseResults(ftsResults, vectorResults)
+    : searchAtlasFiles(context.db, ws, query, Math.max(maxResults * 3, 20)).map((record, index) => ({
+      file_path: record.file_path,
+      score: 1 / (index + 1),
+      record,
+      source: 'fallback' as const,
+    }));
+
+  results = results
+    .filter((entry) => entry.file_path !== seedRow.file_path)
+    .filter((entry) => entry.score >= minSimilarity)
+    .slice(0, maxResults);
+
+  const lines = [
+    '## Atlas Similar',
+    '',
+    `Seed: ${seedRow.file_path}`,
+  ];
+
+  if (results.length === 0) {
+    lines.push(`- No similar files found with min_score=${minSimilarity.toFixed(2)}.`);
+  } else {
+    lines.push(...results.map((entry) => `- ${entry.record.file_path} (${(entry.score * 100).toFixed(1)}%) — ${entry.record.purpose || entry.record.blurb}`));
+  }
+
+  return atlasContent(format, {
+    ok: true,
+    workspace: ws,
+    file_path: seedRow.file_path,
+    limit: maxResults,
+    min_score: minSimilarity,
+    results: results.map((entry) => ({
+      file_path: entry.record.file_path,
+      score: entry.score,
+      source: entry.source,
+      cluster: entry.record.cluster ?? null,
+      purpose: entry.record.purpose || entry.record.blurb || '',
+    })),
+    summary: {
+      result_count: results.length,
+    },
+  }, lines.join('\n'));
+}
+
 export function registerSimilarTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_similar',
@@ -101,97 +200,6 @@ export function registerSimilarTool(server: McpServer, runtime: AtlasRuntime): v
       minScore: z.number().min(0).max(1).optional(),
       format: z.enum(['json', 'text']).optional().describe('Output format: json for structured data, text for human-readable (default: text)'),
     },
-    async ({
-      file_path,
-      filePath,
-      workspace,
-      limit,
-      min_score,
-      minScore,
-      format,
-    }: {
-      file_path?: string;
-      filePath?: string;
-      workspace?: string;
-      limit?: number;
-      min_score?: number;
-      minScore?: number;
-      format?: 'json' | 'text';
-    }) => {
-      const context = resolveDbContext(runtime, workspace);
-      if (!context) {
-        return { content: [{ type: 'text', text: `Workspace "${workspace}" not found.` }] };
-      }
-
-      const ws = context.workspace;
-      const targetFile = file_path ?? filePath;
-      if (!targetFile) {
-        return { content: [{ type: 'text', text: 'atlas_similar requires "file_path".' }] };
-      }
-
-      const seedRow = getAtlasFile(context.db, ws, targetFile);
-      if (!seedRow) {
-        return { content: [{ type: 'text', text: `No atlas row found for ${targetFile} in workspace "${ws}".` }] };
-      }
-
-      const maxResults = Math.max(1, Math.min(limit ?? 10, 50));
-      const minSimilarity = Math.max(0, Math.min(min_score ?? minScore ?? 0.5, 1));
-      const query = buildEmbeddingInput(seedRow) || `${seedRow.file_path}\n${seedRow.purpose || seedRow.blurb || ''}`;
-      const ftsResults = mapHitsToRanked(searchFts(context.db, ws, query, Math.max(maxResults * 3, 20)));
-
-      let vectorResults: RankedResult[] = [];
-      if (runtime.provider) {
-        try {
-          const embedding = await runtime.provider.embedText(query);
-          vectorResults = mapHitsToRanked(searchVector(context.db, ws, embedding, Math.max(maxResults * 3, 20)));
-        } catch {
-          // Non-fatal: FTS and fallback search still work.
-        }
-      }
-
-      let results = (ftsResults.length > 0 || vectorResults.length > 0)
-        ? fuseResults(ftsResults, vectorResults)
-        : searchAtlasFiles(context.db, ws, query, Math.max(maxResults * 3, 20)).map((record, index) => ({
-          file_path: record.file_path,
-          score: 1 / (index + 1),
-          record,
-          source: 'fallback' as const,
-        }));
-
-      results = results
-        .filter((entry) => entry.file_path !== seedRow.file_path)
-        .filter((entry) => entry.score >= minSimilarity)
-        .slice(0, maxResults);
-
-      const lines = [
-        '## Atlas Similar',
-        '',
-        `Seed: ${seedRow.file_path}`,
-      ];
-
-      if (results.length === 0) {
-        lines.push(`- No similar files found with min_score=${minSimilarity.toFixed(2)}.`);
-      } else {
-        lines.push(...results.map((entry) => `- ${entry.record.file_path} (${(entry.score * 100).toFixed(1)}%) — ${entry.record.purpose || entry.record.blurb}`));
-      }
-
-      return atlasContent(format, {
-        ok: true,
-        workspace: ws,
-        file_path: seedRow.file_path,
-        limit: maxResults,
-        min_score: minSimilarity,
-        results: results.map((entry) => ({
-          file_path: entry.record.file_path,
-          score: entry.score,
-          source: entry.source,
-          cluster: entry.record.cluster ?? null,
-          purpose: entry.record.purpose || entry.record.blurb || '',
-        })),
-        summary: {
-          result_count: results.length,
-        },
-      }, lines.join('\n'));
-    },
+    async (args: AtlasSimilarArgs) => runSimilarTool(runtime, args),
   );
 }

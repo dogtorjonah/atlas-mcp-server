@@ -29,10 +29,14 @@ import { registerHotspotsTool } from './tools/hotspots.js';
 import { registerSimilarTool } from './tools/similar.js';
 import { registerPlanContextTool } from './tools/plan_context.js';
 import { registerSmellsTool } from './tools/smells.js';
-import { registerGraphTool } from './tools/graph.js';
 import { registerBridgeTools } from './tools/bridge.js';
 import { registerChangelogTools } from './tools/changelog.js';
 import { registerCommitTool } from './tools/commit.js';
+// Composite tools (consolidation: 21 → 5)
+import { registerQueryTool } from './tools/query.js';
+import { registerGraphCompositeTool } from './tools/graphComposite.js';
+import { registerAuditTool } from './tools/audit.js';
+import { registerAdminTool } from './tools/admin.js';
 import { ATLAS_CONTEXT_RESOURCE_URI, generateContextResource } from './resources/context.js';
 import type { AtlasRuntime, AtlasServerConfig } from './types.js';
 
@@ -303,11 +307,18 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   registerSimilarTool(server, runtime);
   registerPlanContextTool(server, runtime);
   registerSmellsTool(server, runtime);
-  registerGraphTool(server, runtime);
   registerChangelogTools(server, runtime);
   registerCommitTool(server, runtime);
   registerReindexTool(server, runtime);
   registerBridgeTools(server, runtime);
+
+  // ── Composite tools (21 → 5 consolidation) ──
+  // These coexist with the standalone tools above for backward compatibility.
+  // Agents can use either atlas_query({action:"search",...}) or atlas_search({...}).
+  registerQueryTool(server, runtime);
+  registerGraphCompositeTool(server, runtime);
+  registerAuditTool(server, runtime);
+  registerAdminTool(server, runtime);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

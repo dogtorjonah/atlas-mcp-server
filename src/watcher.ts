@@ -146,7 +146,6 @@ async function refreshFile(runtime: AtlasRuntime, absolutePath: string): Promise
     exports: refreshedExports,
   }], {
     sourceRoot: runtime.config.sourceRoot,
-    provider: runtime.provider,
   });
   const crossRefs = pass2[filePath] ?? {
     symbols: {},

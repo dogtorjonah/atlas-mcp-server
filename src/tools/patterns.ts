@@ -4,6 +4,40 @@ import type { AtlasRuntime } from '../types.js';
 import { toolWithDescription } from './helpers.js';
 import { listPatternFiles } from '../db.js';
 
+export interface AtlasPatternsArgs {
+  pattern: string;
+  workspace?: string;
+}
+
+type AtlasToolTextResult = {
+  content: Array<{ type: 'text'; text: string }>;
+};
+
+export async function runPatternsTool(runtime: AtlasRuntime, { pattern, workspace }: AtlasPatternsArgs): Promise<AtlasToolTextResult> {
+  const ws = workspace ?? runtime.config.workspace;
+  const rows = listPatternFiles(runtime.db, ws, pattern);
+
+  if (rows.length === 0) {
+    return {
+      content: [{
+        type: 'text',
+        text: `No files with pattern "${pattern}" in workspace "${ws}".`,
+      }],
+    };
+  }
+
+  const lines = rows.map((row) =>
+    `  📄 ${row.file_path} [${row.cluster ?? 'unknown'}] (${row.loc} LOC)\n     ${row.purpose.slice(0, 120)}`,
+  );
+
+  return {
+    content: [{
+      type: 'text',
+      text: `Pattern: "${pattern}" (${rows.length} files)\n\n${lines.join('\n\n')}`,
+    }],
+  };
+}
+
 export function registerPatternsTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_patterns',
@@ -12,29 +46,6 @@ export function registerPatternsTool(server: McpServer, runtime: AtlasRuntime): 
       pattern: z.string().min(1),
       workspace: z.string().optional(),
     },
-    async ({ pattern, workspace }: { pattern: string; workspace?: string }) => {
-      const ws = workspace ?? runtime.config.workspace;
-      const rows = listPatternFiles(runtime.db, ws, pattern);
-
-      if (rows.length === 0) {
-        return {
-          content: [{
-            type: 'text',
-            text: `No files with pattern "${pattern}" in workspace "${ws}".`,
-          }],
-        };
-      }
-
-      const lines = rows.map((row) =>
-        `  📄 ${row.file_path} [${row.cluster ?? 'unknown'}] (${row.loc} LOC)\n     ${row.purpose.slice(0, 120)}`,
-      );
-
-      return {
-        content: [{
-          type: 'text',
-          text: `Pattern: "${pattern}" (${rows.length} files)\n\n${lines.join('\n\n')}`,
-        }],
-      };
-    },
+    async (args: AtlasPatternsArgs) => runPatternsTool(runtime, args),
   );
 }
