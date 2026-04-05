@@ -489,6 +489,28 @@ function toPathSlug(dir: string | null, fallback: string): string {
   return trimmed.length > 0 ? trimmed : fallback;
 }
 
+function buildFallbackClusterName(filePath: string): string {
+  const dir = path.posix.dirname(filePath).replace(/^\.\/+/, '');
+  if (!dir || dir === '.') {
+    return 'dir/root';
+  }
+
+  const parts = dir
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  const deduped: string[] = [];
+  for (const part of parts) {
+    if (deduped[deduped.length - 1] !== part) {
+      deduped.push(part);
+    }
+  }
+
+  const slug = deduped.join('-').replace(/[^a-zA-Z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  return slug ? `dir/${slug}` : 'dir/root';
+}
+
 function assignClusterNames(
   communities: Map<string, string[]>,
   graph: Graph,
@@ -618,6 +640,12 @@ export function runCommunityDetection(
     if (!clusterName) continue;
     for (const file of files) {
       fileToCluster.set(file, clusterName);
+    }
+  }
+
+  for (const filePath of allFiles) {
+    if (!fileToCluster.has(filePath)) {
+      fileToCluster.set(filePath, buildFallbackClusterName(filePath));
     }
   }
 

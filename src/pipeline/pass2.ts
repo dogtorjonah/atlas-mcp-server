@@ -1,8 +1,62 @@
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import type { AtlasDatabase } from '../db.js';
 import { replaceReferencesForFile } from '../db.js';
 import type { Pass0FileInfo } from './pass0.js';
+
+/* ── ripgrep path resolution ────────────────────────────────────────── */
+
+let cachedRgPath: string | null | undefined; // undefined = not yet resolved
+
+const COMMON_RG_LOCATIONS = [
+  '/opt/homebrew/bin/rg',
+  '/usr/local/bin/rg',
+  '/usr/bin/rg',
+  '/home/linuxbrew/.linuxbrew/bin/rg',
+];
+
+function resolveRgPath(): string | null {
+  if (cachedRgPath !== undefined) return cachedRgPath;
+
+  // 1. Explicit env override
+  const envPath = process.env.RG_BIN ?? process.env.RIPGREP_BIN;
+  if (envPath && existsSync(envPath)) {
+    cachedRgPath = envPath;
+    return cachedRgPath;
+  }
+
+  // 2. Check common installation locations
+  for (const candidate of COMMON_RG_LOCATIONS) {
+    if (existsSync(candidate)) {
+      cachedRgPath = candidate;
+      return cachedRgPath;
+    }
+  }
+
+  // 3. Fall back to `which rg`
+  try {
+    const result = execFileSync('which', ['rg'], { encoding: 'utf8', timeout: 5000 }).trim();
+    if (result && existsSync(result)) {
+      cachedRgPath = result;
+      return cachedRgPath;
+    }
+  } catch {
+    // `which` not available or rg not found
+  }
+
+  // 4. Last resort: try bare 'rg' (works if it's on PATH for the spawned process)
+  try {
+    execFileSync('rg', ['--version'], { encoding: 'utf8', timeout: 5000 });
+    cachedRgPath = 'rg';
+    return cachedRgPath;
+  } catch {
+    // rg truly not available
+  }
+
+  cachedRgPath = null;
+  return null;
+}
 
 export interface Pass2CallSite {
   file: string;
@@ -192,8 +246,11 @@ function getDeterministicExportedSymbols(
 }
 
 function runGrep(symbolName: string, sourceRoot: string, definingFile: string, contextLines: number): GrepMatchGroup[] {
+  const rgPath = resolveRgPath();
+  if (!rgPath) return [];
+
   try {
-    const output = execFileSync('rg', [
+    const output = execFileSync(rgPath, [
       '--json',
       '-n',
       '-w',
@@ -437,6 +494,15 @@ export async function runPass2(
   const result: Record<string, Pass2CrossRef> = {};
   const contextLines = options.contextLines ?? 2;
   const maxGrepHits = options.maxGrepHits ?? 10;
+
+  const rgPath = resolveRgPath();
+  if (!rgPath) {
+    console.warn(
+      '[atlas-pass2] ⚠️  ripgrep (rg) not found. Cross-reference heuristic fallback will be skipped for all files.\n'
+      + '  Install ripgrep: https://github.com/BurntSushi/ripgrep#installation\n'
+      + '  Or set RG_BIN=/path/to/rg environment variable.',
+    );
+  }
 
   for (const file of files) {
     const sourceText = await readFile(file.absolutePath, 'utf8');

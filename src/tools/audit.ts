@@ -67,6 +67,13 @@ const GAP_LABELS: Record<GapType, string> = {
   installed_not_imported: 'installed_not_imported',
 };
 
+const MAX_FINDINGS = 200;
+const IDENTIFIER_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'by', 'for', 'from', 'if', 'in', 'into', 'is',
+  'it', 'its', 'of', 'on', 'only', 'or', 'out', 'the', 'their', 'then', 'this', 'to',
+  'used', 'uses', 'using', 'value', 'values', 'when', 'with',
+]);
+
 function resolveDbContext(runtime: AtlasRuntime, workspace?: string): RuntimeDbContext | null {
   if (!workspace || workspace === runtime.config.workspace) {
     return {
@@ -293,24 +300,51 @@ function getConsumersByFile(
   return seen;
 }
 
+function isLikelyCodeIdentifier(symbol: string, quoted: boolean): boolean {
+  if (!symbol) return false;
+  if (quoted) return symbol.length >= 2;
+  if (symbol.length < 4) return false;
+  const lower = symbol.toLowerCase();
+  if (IDENTIFIER_STOP_WORDS.has(lower)) return false;
+  if (/^[a-z]+$/.test(symbol)) return false;
+  return (
+    /^[A-Z][A-Za-z0-9_$]*$/.test(symbol)
+    || /^[a-z]+[A-Z][A-Za-z0-9_$]*$/.test(symbol)
+    || /^[A-Z][A-Z0-9_]*$/.test(symbol)
+  );
+}
+
 function extractLoadedSymbols(dataFlows: string[]): Array<{ symbol: string; flow: string; strong: boolean }> {
   const extracted: Array<{ symbol: string; flow: string; strong: boolean }> = [];
   const patterns = [
-    /\b(?:derive|derives|derived|load|loads|loaded|fetch|fetches|fetched)\s+`?([A-Za-z_$][\w$]*)`?/gi,
-    /\b`([A-Za-z_$][\w$]*)`\b/g,
+    {
+      regex: /\b(?:derive|derives|derived|load|loads|loaded|fetch|fetches|fetched)\s+`([A-Za-z_$][\w$]*)`/gi,
+      strong: true,
+      quoted: true,
+    },
+    {
+      regex: /\b(?:derive|derives|derived|load|loads|loaded|fetch|fetches|fetched)\s+([A-Za-z_$][\w$]*)/gi,
+      strong: true,
+      quoted: false,
+    },
+    {
+      regex: /`([A-Za-z_$][\w$]*)`/g,
+      strong: false,
+      quoted: true,
+    },
   ];
 
   for (const flow of dataFlows) {
     if (!flow || typeof flow !== 'string') continue;
-    for (const [index, pattern] of patterns.entries()) {
-      pattern.lastIndex = 0;
-      let match: RegExpExecArray | null = pattern.exec(flow);
+    for (const pattern of patterns) {
+      pattern.regex.lastIndex = 0;
+      let match: RegExpExecArray | null = pattern.regex.exec(flow);
       while (match) {
         const symbol = (match[1] ?? '').trim();
-        if (symbol.length >= 3) {
-          extracted.push({ symbol, flow, strong: index === 0 });
+        if (isLikelyCodeIdentifier(symbol, pattern.quoted)) {
+          extracted.push({ symbol, flow, strong: pattern.strong });
         }
-        match = pattern.exec(flow);
+        match = pattern.regex.exec(flow);
       }
     }
   }
@@ -507,6 +541,7 @@ async function runGapsAction(
     filePath?: string;
     gap_types?: GapType[];
     gapTypes?: GapType[];
+    format?: 'json' | 'text';
   },
 ) {
   const filePath = args.file_path ?? args.filePath;
@@ -665,15 +700,22 @@ async function runGapsAction(
     }
   }
 
+  const out = resolveFormat(args.format);
+  const totalFindings = findings.length;
+  const displayedFindings = findings.slice(0, MAX_FINDINGS);
   const scopeLabel = filePath ?? args.cluster ?? `${scopedFiles.length} scoped files`;
   const lines: string[] = [`## Structural Gaps: ${scopeLabel}`, ''];
   for (const type of types) {
-    const typeFindings = findings.filter((finding) => finding.gapType === type);
-    lines.push(`### ${GAP_LABELS[type]} (${typeFindings.length} found)`);
-    if (typeFindings.length === 0) {
+    const totalTypeFindings = findings.filter((finding) => finding.gapType === type);
+    const displayedTypeFindings = displayedFindings.filter((finding) => finding.gapType === type);
+    const heading = totalFindings > MAX_FINDINGS
+      ? `### ${GAP_LABELS[type]} (${displayedTypeFindings.length} shown of ${totalTypeFindings.length} found)`
+      : `### ${GAP_LABELS[type]} (${totalTypeFindings.length} found)`;
+    lines.push(heading);
+    if (displayedTypeFindings.length === 0) {
       lines.push('- none');
     } else {
-      for (const finding of typeFindings) {
+      for (const finding of displayedTypeFindings) {
         lines.push(`File: ${finding.filePath}`);
         lines.push(formatFinding(finding));
       }
@@ -681,9 +723,25 @@ async function runGapsAction(
     lines.push('');
   }
 
+  if (totalFindings > MAX_FINDINGS) {
+    lines.push(`⚠️ Showing first ${MAX_FINDINGS} of ${totalFindings} findings. Narrow the scope with file_path, cluster, or gap_types for a complete report.`);
+  }
+
   const content: Array<{ type: 'text'; text: string }> = [{
     type: 'text',
-    text: lines.join('\n').trim(),
+    text: formatOutput(out, {
+      ok: true,
+      workspace: target.workspace,
+      cluster: args.cluster ?? null,
+      file_path: filePath ?? null,
+      gap_types: types,
+      results: displayedFindings,
+      summary: {
+        total_findings: totalFindings,
+        shown_findings: displayedFindings.length,
+        truncated: totalFindings > MAX_FINDINGS,
+      },
+    }, lines.join('\n').trim()),
   }];
   if (findings.some((finding) => finding.gapType === 'exported_not_referenced')) {
     content.push({

@@ -710,7 +710,8 @@ export function listClusterFiles(db: AtlasDatabase, workspace: string, cluster: 
   return rows.map(mapFileRecord);
 }
 
-export function listPatternFiles(db: AtlasDatabase, workspace: string, pattern: string): AtlasFileRecord[] {
+export function listPatternFiles(db: AtlasDatabase, workspace: string, pattern: string, limit?: number): AtlasFileRecord[] {
+  const effectiveLimit = Math.max(1, Math.min(limit ?? 200, 500));
   const rows = db.prepare(
     `SELECT * FROM atlas_files
      WHERE workspace = ?
@@ -719,19 +720,31 @@ export function listPatternFiles(db: AtlasDatabase, workspace: string, pattern: 
          FROM json_each(atlas_files.patterns)
          WHERE json_each.value = ?
        )
-     ORDER BY file_path ASC`,
-  ).all(workspace, pattern) as Record<string, unknown>[];
+     ORDER BY file_path ASC
+     LIMIT ?`,
+  ).all(workspace, pattern, effectiveLimit) as Record<string, unknown>[];
   return rows.map(mapFileRecord);
 }
 
-export function listDistinctPatterns(db: AtlasDatabase, workspace: string): string[] {
+export function listDistinctPatterns(db: AtlasDatabase, workspace: string, limit?: number): string[] {
+  const effectiveLimit = Math.max(1, Math.min(limit ?? 200, 1000));
   const rows = db.prepare(
     `SELECT DISTINCT je.value AS pattern
      FROM atlas_files, json_each(atlas_files.patterns) AS je
      WHERE atlas_files.workspace = ?
-     ORDER BY je.value ASC`,
-  ).all(workspace) as Array<{ pattern: string }>;
+     ORDER BY je.value ASC
+     LIMIT ?`,
+  ).all(workspace, effectiveLimit) as Array<{ pattern: string }>;
   return rows.map((row) => row.pattern).filter((p) => typeof p === 'string' && p.trim().length > 0);
+}
+
+export function countDistinctPatterns(db: AtlasDatabase, workspace: string): number {
+  const row = db.prepare(
+    `SELECT COUNT(DISTINCT je.value) AS cnt
+     FROM atlas_files, json_each(atlas_files.patterns) AS je
+     WHERE atlas_files.workspace = ?`,
+  ).get(workspace) as { cnt: number } | undefined;
+  return row?.cnt ?? 0;
 }
 
 export function insertAtlasChangelog(db: AtlasDatabase, input: AtlasChangelogInsertInput): AtlasChangelogRecord {

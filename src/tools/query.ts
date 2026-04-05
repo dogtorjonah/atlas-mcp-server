@@ -9,7 +9,7 @@ import { runBriefTool } from './brief.js';
 import { runSnippetTool } from './snippet.js';
 import { runSimilarTool } from './similar.js';
 import { runPlanContextTool } from './plan_context.js';
-import { runClusterTool } from './cluster.js';
+import { runClusterTool, runClusterCatalog } from './cluster.js';
 import { runPatternsTool } from './patterns.js';
 import { runHistoryTool } from './history.js';
 
@@ -269,13 +269,16 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
             format,
           });
         case 'cluster':
-          if (!cluster) return missing('cluster');
+          if (!cluster) return appendGuidance(
+            await runClusterCatalog(runtime, workspace),
+            'Use `atlas_query action=cluster cluster=<name>` to inspect a specific cluster.',
+          );
           return appendGuidance(
             await runClusterTool(runtime, { cluster, workspace }),
             'Use `atlas_graph action=reachability` next to map dependency entrypoints and dead-code opportunities in this cluster.',
           );
         case 'patterns':
-          return runPatternsTool(runtime, { pattern: pattern || undefined, workspace });
+          return runPatternsTool(runtime, { pattern: pattern || undefined, workspace, limit });
         case 'history':
           return runHistoryTool(runtime, {
             file_path: resolvedFilePath,

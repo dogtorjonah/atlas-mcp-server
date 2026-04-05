@@ -4,7 +4,7 @@ import type { AtlasRuntime } from '../types.js';
 import { listClusterFiles } from '../db.js';
 import { toolWithDescription } from './helpers.js';
 
-function listClusters(runtime: AtlasRuntime, workspace: string): string[] {
+export function listClusters(runtime: AtlasRuntime, workspace: string): string[] {
   const rows = runtime.db.prepare(
     'SELECT DISTINCT cluster FROM atlas_files WHERE workspace = ? ORDER BY cluster ASC',
   ).all(workspace) as Array<{ cluster: string | null }>;
@@ -21,6 +21,38 @@ export interface AtlasClusterArgs {
 type AtlasToolTextResult = {
   content: Array<{ type: 'text'; text: string }>;
 };
+
+export async function runClusterCatalog(runtime: AtlasRuntime, workspace?: string): Promise<AtlasToolTextResult> {
+  const ws = workspace ?? runtime.config.workspace;
+  const clusters = listClusters(runtime, ws);
+  if (clusters.length === 0) {
+    return {
+      content: [{
+        type: 'text',
+        text: `No clusters found in workspace "${ws}". Clusters are assigned during atlas indexing (community detection). Run \`atlas_admin action=reindex\` to populate.`,
+      }],
+    };
+  }
+
+  // Count files per cluster for a useful summary
+  const clusterCounts = new Map<string, number>();
+  for (const name of clusters) {
+    const rows = listClusterFiles(runtime.db, ws, name);
+    clusterCounts.set(name, rows.length);
+  }
+
+  const lines = clusters.map((name) => {
+    const count = clusterCounts.get(name) ?? 0;
+    return `  • ${name} (${count} file${count === 1 ? '' : 's'})`;
+  });
+
+  return {
+    content: [{
+      type: 'text',
+      text: `Available clusters in "${ws}" (${clusters.length}):\n${lines.join('\n')}\n\n💡 Use \`atlas_query action=cluster cluster=<name>\` to list files in a specific cluster.`,
+    }],
+  };
+}
 
 export async function runClusterTool(runtime: AtlasRuntime, { cluster, workspace }: AtlasClusterArgs): Promise<AtlasToolTextResult> {
   const ws = workspace ?? runtime.config.workspace;
