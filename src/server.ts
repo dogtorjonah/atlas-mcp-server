@@ -139,6 +139,29 @@ function readInitProviderChoice(answer: string, fallback: AtlasServerConfig['pro
   }
 }
 
+const PROVIDER_MODELS: Record<string, Array<{ value: string; label: string; default?: boolean }>> = {
+  openai: [
+    { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini (fast, cheap)', default: true },
+    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+    { value: 'gpt-4.1', label: 'GPT-4.1' },
+    { value: 'o4-mini', label: 'o4-mini (reasoning)' },
+  ],
+  anthropic: [
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (fast, cheap)', default: true },
+    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+    { value: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
+  ],
+  gemini: [
+    { value: 'gemini-3.1-flash', label: 'Gemini 3.1 Flash (fast, cheap)', default: true },
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  ],
+  ollama: [
+    { value: 'llama3.2', label: 'Llama 3.2 (default)', default: true },
+    { value: 'codellama', label: 'Code Llama' },
+    { value: 'mistral', label: 'Mistral' },
+  ],
+};
+
 async function promptInitWizard(config: AtlasServerConfig): Promise<AtlasServerConfig> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     return config;
@@ -151,33 +174,99 @@ async function promptInitWizard(config: AtlasServerConfig): Promise<AtlasServerC
 
   try {
     console.log('');
-    console.log('[atlas-init] setup wizard');
-    const sourceRootAnswer = await rl.question(`[atlas-init] Codebase path [${config.sourceRoot}]: `);
+    console.log('╔══════════════════════════════════════╗');
+    console.log('║       Atlas — Setup Wizard           ║');
+    console.log('╚══════════════════════════════════════╝');
+    console.log('');
+
+    // 1. Codebase path
+    const sourceRootAnswer = await rl.question(`  Codebase path [${config.sourceRoot}]: `);
     const sourceRoot = path.resolve(sourceRootAnswer.trim() || config.sourceRoot);
+
+    // 2. Workspace name
     const workspaceDefault = path.basename(sourceRoot).toLowerCase();
-    const workspaceAnswer = await rl.question(`[atlas-init] Workspace name [${workspaceDefault}]: `);
+    const workspaceAnswer = await rl.question(`  Workspace name [${workspaceDefault}]: `);
     const workspace = workspaceAnswer.trim() || workspaceDefault;
-    const providerAnswer = await rl.question(`[atlas-init] Provider [1=openai, 2=anthropic, 3=gemini, 4=ollama] [${config.provider}]: `);
-    const provider = providerAnswer.trim() ? readInitProviderChoice(providerAnswer, config.provider) : config.provider;
-    const modelDefault = config.model || getAtlasDefaultModel(provider);
-    const modelAnswer = await rl.question(`[atlas-init] Model [${modelDefault}]: `);
-    const model = modelAnswer.trim() || modelDefault;
-    const concurrencyAnswer = await rl.question(`[atlas-init] Concurrency [${config.concurrency}]: `);
+
+    // 3. Provider
+    console.log('');
+    console.log('  AI Provider (for blurbs + deep extraction):');
+    console.log('    1) OpenAI       — gpt-5.4-mini');
+    console.log('    2) Anthropic    — claude-haiku-4-5');
+    console.log('    3) Gemini       — gemini-3.1-flash');
+    console.log('    4) Ollama       — llama3.2 (local)');
+    console.log('    5) None         — deterministic only (no API key needed)');
+    console.log('');
+    const providerAnswer = await rl.question(`  Choose provider [1-5] (default: ${config.provider}): `);
+    let provider = config.provider;
+    if (providerAnswer.trim() === '5' || providerAnswer.trim().toLowerCase() === 'none') {
+      provider = 'openai'; // use openai as placeholder, but no key = scaffold mode
+    } else if (providerAnswer.trim()) {
+      provider = readInitProviderChoice(providerAnswer, config.provider);
+    }
+    const isNoneProvider = providerAnswer.trim() === '5' || providerAnswer.trim().toLowerCase() === 'none';
+
+    // 4. Model selection
+    let model = getAtlasDefaultModel(provider);
+    if (!isNoneProvider) {
+      const models = PROVIDER_MODELS[provider] ?? [];
+      if (models.length > 0) {
+        console.log('');
+        console.log(`  Available ${provider} models:`);
+        models.forEach((m, i) => {
+          const marker = m.default ? ' (default)' : '';
+          console.log(`    ${i + 1}) ${m.value} — ${m.label}${marker}`);
+        });
+        console.log('');
+        const modelAnswer = await rl.question(`  Choose model [1-${models.length}] (default: 1): `);
+        const modelIndex = Number.parseInt(modelAnswer.trim(), 10) - 1;
+        if (modelIndex >= 0 && modelIndex < models.length) {
+          model = models[modelIndex]!.value;
+        } else if (modelAnswer.trim()) {
+          // Allow typing a custom model string
+          model = modelAnswer.trim();
+        }
+      }
+    }
+
+    // 5. Concurrency
+    const concurrencyAnswer = await rl.question(`  Concurrency [${config.concurrency}]: `);
     const parsedConcurrency = Number.parseInt(concurrencyAnswer.trim(), 10);
     const concurrency = Number.isFinite(parsedConcurrency) && parsedConcurrency > 0 ? parsedConcurrency : config.concurrency;
 
-    const openAiApiKey = provider === 'openai'
-      ? (config.openAiApiKey || (await rl.question('[atlas-init] OpenAI API key (blank for scaffold): ')).trim())
-      : config.openAiApiKey;
-    const anthropicApiKey = provider === 'anthropic'
-      ? (config.anthropicApiKey || (await rl.question('[atlas-init] Anthropic API key (blank for scaffold): ')).trim())
-      : config.anthropicApiKey;
-    const geminiApiKey = provider === 'gemini'
-      ? (config.geminiApiKey || (await rl.question('[atlas-init] Gemini API key (blank for scaffold): ')).trim())
-      : config.geminiApiKey;
-    const ollamaBaseUrl = provider === 'ollama'
-      ? (await rl.question(`[atlas-init] Ollama base URL [${config.ollamaBaseUrl}]: `)).trim() || config.ollamaBaseUrl
-      : config.ollamaBaseUrl;
+    // 6. API key (only for the chosen provider)
+    let openAiApiKey = config.openAiApiKey;
+    let anthropicApiKey = config.anthropicApiKey;
+    let geminiApiKey = config.geminiApiKey;
+    let ollamaBaseUrl = config.ollamaBaseUrl;
+
+    if (!isNoneProvider) {
+      console.log('');
+      if (provider === 'openai' && !config.openAiApiKey) {
+        openAiApiKey = (await rl.question('  OpenAI API key (starts with sk-proj-...): ')).trim();
+      }
+      if (provider === 'anthropic' && !config.anthropicApiKey) {
+        anthropicApiKey = (await rl.question('  Anthropic API key (starts with sk-ant-...): ')).trim();
+      }
+      if (provider === 'gemini' && !config.geminiApiKey) {
+        geminiApiKey = (await rl.question('  Gemini API key: ')).trim();
+      }
+      if (provider === 'ollama') {
+        const urlAnswer = await rl.question(`  Ollama base URL [${config.ollamaBaseUrl}]: `);
+        ollamaBaseUrl = urlAnswer.trim() || config.ollamaBaseUrl;
+      }
+    }
+
+    // Summary
+    console.log('');
+    console.log('  ─────────────────────────────────────');
+    console.log(`  Codebase:    ${sourceRoot}`);
+    console.log(`  Workspace:   ${workspace}`);
+    console.log(`  Provider:    ${isNoneProvider ? 'none (deterministic only)' : provider}`);
+    if (!isNoneProvider) console.log(`  Model:       ${model}`);
+    console.log(`  Concurrency: ${concurrency}`);
+    console.log('  ─────────────────────────────────────');
+    console.log('');
 
     return {
       ...config,
