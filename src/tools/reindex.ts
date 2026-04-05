@@ -215,21 +215,56 @@ export async function runReindexTool(runtime: AtlasRuntime, {
     }
     // ── Compute staleness for accurate dry-run reporting ──
     if (requestedPhase === 'pass2') {
-      return {
-        content: [{
-          type: 'text',
-          text: [
-            `atlas_reindex dry-run (phase=pass2): ${pass2TargetCount} eligible file${pass2TargetCount === 1 ? '' : 's'}`,
-            `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
-            'Mode: pass2-only rerun (cross-refs only, preserves existing extraction fields)',
-            `Requested files: ${uniqueFiles.length > 0 ? uniqueFiles.length : 'all eligible files'}`,
-            pass2MissingCount > 0 ? `Missing requested files: ${pass2MissingCount}` : '',
-            ``,
-            'Call atlas_reindex with confirm=true and phase="pass2" to rerun cross-refs only.',
-            'Pass files=["path/to/file.ts"] with phase="pass2" to limit the rerun.',
-          ].filter(Boolean).join('\n'),
-        }],
-      };
+      // Compute actual phase-level breakdown using getFilePhase, mirroring
+      // the pipeline's selectPass2Targets prerequisite check.
+      const targetRows = uniqueFiles.length > 0
+        ? atlasFiles.filter((file) => uniqueFiles.includes(file.file_path))
+        : atlasFiles;
+      let alreadyComplete = 0;
+      let eligible = 0;
+      let missingPrereq = 0;
+      for (const record of targetRows) {
+        const absPath = path.join(runtime.config.sourceRoot, record.file_path);
+        let currentHash: string;
+        try {
+          const content = fs.readFileSync(absPath, 'utf8');
+          currentHash = hashContent(content);
+        } catch {
+          continue; // source file gone, skip
+        }
+        const phase = getFilePhase(runtime.db, activeWorkspace, record.file_path, currentHash);
+        if (phase === 'pass2') {
+          alreadyComplete++;
+        } else if (phase === 'pass1' || phase === 'embed') {
+          eligible++;
+        } else {
+          missingPrereq++;
+        }
+      }
+
+      const lines: string[] = [
+        `atlas_reindex dry-run (phase=pass2): ${targetRows.length} total files`,
+        `  ✅ ${alreadyComplete} already have cross-refs (will be re-computed)`,
+        `  📊 ${eligible} eligible (pass1+ complete, ready for cross-refs)`,
+      ];
+      if (missingPrereq > 0) {
+        lines.push(`  ⚠️  ${missingPrereq} missing prerequisites (need pass1 first, will be skipped)`);
+      }
+      if (pass2MissingCount > 0) {
+        lines.push(`  ❌ ${pass2MissingCount} requested files not found in atlas`);
+      }
+      const willProcess = alreadyComplete + eligible;
+      lines.push(
+        `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
+        `Mode: pass2-only rerun (cross-refs only, preserves existing extraction fields)`,
+        `Requested files: ${uniqueFiles.length > 0 ? uniqueFiles.length : 'all eligible files'}`,
+        `Files to process: ${willProcess}`,
+        '',
+        'Call atlas_reindex with confirm=true and phase="pass2" to rerun cross-refs only.',
+        'Pass files=["path/to/file.ts"] with phase="pass2" to limit the rerun.',
+      );
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
     }
 
     const stats = computeStaleStats(runtime.db, activeWorkspace, runtime.config.sourceRoot, atlasFiles);
