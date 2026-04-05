@@ -96,12 +96,12 @@ export function getAtlasDefaultModel(provider: AtlasProviderName): string {
     case 'anthropic':
       return 'claude-haiku-4-5-20251001';
     case 'gemini':
-      return 'gemini-3.1-flash';
+      return 'gemini-3-flash';
     case 'ollama':
       return process.env.ATLAS_OLLAMA_MODEL ?? process.env.OLLAMA_MODEL ?? 'llama3.2';
     case 'openai':
     default:
-      return 'gpt-5.4-mini';
+      return 'gpt-4.1-nano';
   }
 }
 

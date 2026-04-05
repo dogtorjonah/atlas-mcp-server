@@ -28,9 +28,9 @@ The init wizard walks you through the codebase path, workspace, provider, model,
 
 | Provider | Chat Model | Embedding Model |
 |----------|-----------|-----------------|
-| **OpenAI** | `gpt-5.4-mini` | `text-embedding-3-small` |
+| **OpenAI** | `gpt-4.1-nano` | `text-embedding-3-small` |
 | **Anthropic** | `claude-haiku-4-5` | `voyage-3-small` (or OpenAI fallback) |
-| **Gemini** | `gemini-3.1-flash` | `gemini-embedding-001` |
+| **Gemini** | `gemini-3-flash` | `gemini-embedding-001` |
 | **Ollama** | `llama3.2` (configurable) | `nomic-embed-text` (configurable) |
 
 If no provider API keys are configured, the server runs in **deterministic-only mode** — all phases run, but pass0.5, pass1, and embed produce scaffold placeholders and pseudo-embeddings instead of real LLM output. No external API calls are made.

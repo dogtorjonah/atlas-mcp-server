@@ -141,24 +141,20 @@ function readInitProviderChoice(answer: string, fallback: AtlasServerConfig['pro
 
 const PROVIDER_MODELS: Record<string, Array<{ value: string; label: string; default?: boolean }>> = {
   openai: [
-    { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini (fast, cheap)', default: true },
-    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
-    { value: 'gpt-4.1', label: 'GPT-4.1' },
-    { value: 'o4-mini', label: 'o4-mini (reasoning)' },
+    { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano — cheapest ($0.10/M in)', default: true },
+    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini — fast + capable ($0.40/M in)' },
+    { value: 'gpt-4o-mini', label: 'GPT-4o Mini — legacy cheap ($0.15/M in)' },
   ],
   anthropic: [
-    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (fast, cheap)', default: true },
-    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-    { value: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 — fast + cheap ($1/M in)', default: true },
   ],
   gemini: [
-    { value: 'gemini-3.1-flash', label: 'Gemini 3.1 Flash (fast, cheap)', default: true },
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { value: 'gemini-3-flash', label: 'Gemini 3 Flash — latest + fast', default: true },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash — cheaper ($0.15/M in)' },
   ],
   ollama: [
-    { value: 'llama3.2', label: 'Llama 3.2 (default)', default: true },
-    { value: 'codellama', label: 'Code Llama' },
-    { value: 'mistral', label: 'Mistral' },
+    { value: 'llama3.2', label: 'Llama 3.2 — general purpose', default: true },
+    { value: 'qwen2.5-coder', label: 'Qwen 2.5 Coder — code-focused' },
   ],
 };
 
@@ -191,9 +187,9 @@ async function promptInitWizard(config: AtlasServerConfig): Promise<AtlasServerC
     // 3. Provider
     console.log('');
     console.log('  AI Provider (for blurbs + deep extraction):');
-    console.log('    1) OpenAI       — gpt-5.4-mini');
-    console.log('    2) Anthropic    — claude-haiku-4-5');
-    console.log('    3) Gemini       — gemini-3.1-flash');
+    console.log('    1) OpenAI       — gpt-4.1-nano');
+    console.log('    2) Anthropic    — claude-haiku-4.5');
+    console.log('    3) Gemini       — gemini-3-flash');
     console.log('    4) Ollama       — llama3.2 (local)');
     console.log('    5) None         — deterministic only (no API key needed)');
     console.log('');
