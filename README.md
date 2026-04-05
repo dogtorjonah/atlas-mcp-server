@@ -224,4 +224,4 @@ All languages get structural AST extraction via tree-sitter (symbols, edges, exp
 
 ## License
 
-MIT
+AGPL-3.0 — see [LICENSE](./LICENSE) for details.
