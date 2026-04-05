@@ -497,11 +497,15 @@ export async function runPass2(
 
   const rgPath = resolveRgPath();
   if (!rgPath) {
-    console.warn(
-      '[atlas-pass2] ⚠️  ripgrep (rg) not found. Cross-reference heuristic fallback will be skipped for all files.\n'
-      + '  Install ripgrep: https://github.com/BurntSushi/ripgrep#installation\n'
-      + '  Or set RG_BIN=/path/to/rg environment variable.',
+    console.error(
+      '[atlas-pass2] ❌ ripgrep (rg) NOT FOUND — all cross-references will be empty!\n'
+      + '  Checked: PATH, common locations (/opt/homebrew/bin/rg, /usr/local/bin/rg, /usr/bin/rg), `which rg`\n'
+      + '  Install: brew install ripgrep | apt install ripgrep | cargo install ripgrep\n'
+      + '  Or set RG_BIN=/path/to/rg environment variable.\n'
+      + `  PATH: ${process.env.PATH ?? '(empty)'}`,
     );
+  } else {
+    console.log(`[atlas-pass2] rg resolved: ${rgPath} | sourceRoot: ${options.sourceRoot} | files: ${files.length}`);
   }
 
   for (const file of files) {

@@ -23,6 +23,7 @@ interface ReindexCompletion {
   failed: number;
   durationMs: number;
   completedAt: Date;
+  warning?: string;
 }
 const lastCompletion = new Map<string, ReindexCompletion>();
 
@@ -174,16 +175,19 @@ export async function runReindexTool(runtime: AtlasRuntime, {
         const durationSec = Math.round(completed.durationMs / 1000);
         const modeLabel = completed.mode === 'pass2' ? 'Pass 2 rerun' : 'Reindex';
         lastCompletion.delete(activeWorkspace);
+        const completionLines = [
+          `✅ ${modeLabel} completed ${agoSec}s ago (ran for ${durationSec}s)`,
+          `  ${completed.succeeded} succeeded, ${completed.failed} failed`,
+          `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
+        ];
+        if (completed.warning) {
+          completionLines.push('', completed.warning);
+        }
+        completionLines.push('', 'Atlas data is now up-to-date. Use `atlas_query` to explore the refreshed data.');
         return {
           content: [{
             type: 'text',
-            text: [
-              `✅ ${modeLabel} completed ${agoSec}s ago (ran for ${durationSec}s)`,
-              `  ${completed.succeeded} succeeded, ${completed.failed} failed`,
-              `Provider: ${profile.providerLabel} (${profile.modelLabel})`,
-              '',
-              'Atlas data is now up-to-date. Use `atlas_query` to explore the refreshed data.',
-            ].join('\n'),
+            text: completionLines.join('\n'),
           }],
         };
       }
@@ -386,13 +390,35 @@ export async function runReindexTool(runtime: AtlasRuntime, {
     files: uniqueFiles.length > 0 ? uniqueFiles : undefined,
   }).then((result) => {
     const succeeded = result.filesProcessed - result.filesFailed;
-    console.log(`[atlas-reindex] complete: ${succeeded} succeeded, ${result.filesFailed} failed`);
+    const durationMs = Date.now() - runStartedAt.getTime();
+    console.log(`[atlas-reindex] complete: ${succeeded} succeeded, ${result.filesFailed} failed in ${Math.round(durationMs / 1000)}s`);
+
+    // Sanity check: if pass2 completed but most files have 0 cross-refs, rg likely failed
+    let xrefWarning: string | undefined;
+    if (requestedPhase === 'pass2' && succeeded > 10) {
+      try {
+        const row = runtime.db.prepare(
+          `SELECT count(*) as cnt FROM atlas_files
+           WHERE workspace = ? AND cross_refs IS NOT NULL
+             AND json_extract(cross_refs, '$.total_cross_references') > 0`,
+        ).get(activeWorkspace) as { cnt: number } | undefined;
+        const withXrefs = row?.cnt ?? 0;
+        if (withXrefs < succeeded * 0.1) {
+          xrefWarning = `⚠️  Only ${withXrefs}/${succeeded} files have non-zero cross-refs. ripgrep (rg) may not be installed or accessible.`;
+          console.warn(`[atlas-reindex] ${xrefWarning}`);
+        }
+      } catch {
+        // ignore check failure
+      }
+    }
+
     lastCompletion.set(activeWorkspace, {
       mode: requestedPhase,
       succeeded,
       failed: result.filesFailed,
-      durationMs: Date.now() - runStartedAt.getTime(),
+      durationMs,
       completedAt: new Date(),
+      warning: xrefWarning,
     });
     notifyAtlasContextUpdated(runtime.server).catch(() => {});
   }).catch((error: unknown) => {
