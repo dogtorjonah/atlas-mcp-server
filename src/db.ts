@@ -724,6 +724,16 @@ export function listPatternFiles(db: AtlasDatabase, workspace: string, pattern: 
   return rows.map(mapFileRecord);
 }
 
+export function listDistinctPatterns(db: AtlasDatabase, workspace: string): string[] {
+  const rows = db.prepare(
+    `SELECT DISTINCT je.value AS pattern
+     FROM atlas_files, json_each(atlas_files.patterns) AS je
+     WHERE atlas_files.workspace = ?
+     ORDER BY je.value ASC`,
+  ).all(workspace) as Array<{ pattern: string }>;
+  return rows.map((row) => row.pattern).filter((p) => typeof p === 'string' && p.trim().length > 0);
+}
+
 export function insertAtlasChangelog(db: AtlasDatabase, input: AtlasChangelogInsertInput): AtlasChangelogRecord {
   const result = db.prepare(
     `INSERT INTO atlas_changelog (

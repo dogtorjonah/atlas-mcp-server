@@ -233,7 +233,12 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
             return appendGuidance(result, buildLookupHint(firstText(result)));
           }
         case 'brief':
-          if (!resolvedFilePath) return missing('file_path');
+          if (!resolvedFilePath) return {
+            content: [{
+              type: 'text' as const,
+              text: 'atlas_query action=brief requires "file_path" — it provides a concise summary of a specific file.\n\n💡 For workspace-level orientation, try:\n  • `atlas_query action=search query="<broad topic>"` to find relevant files\n  • `atlas_query action=cluster` to explore files grouped by domain\n  • `atlas_query action=patterns` to discover common code patterns',
+            }],
+          };
           {
             const result = await runBriefTool(runtime, { filePath: resolvedFilePath, workspace });
             return appendGuidance(result, buildBriefHint(firstText(result)));
@@ -270,8 +275,7 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
             'Use `atlas_graph action=reachability` next to map dependency entrypoints and dead-code opportunities in this cluster.',
           );
         case 'patterns':
-          if (!pattern) return missing('pattern');
-          return runPatternsTool(runtime, { pattern, workspace });
+          return runPatternsTool(runtime, { pattern: pattern || undefined, workspace });
         case 'history':
           return runHistoryTool(runtime, {
             file_path: resolvedFilePath,

@@ -144,21 +144,83 @@ export function registerGraphTool(server: McpServer, runtime: AtlasRuntime): voi
           edgeCounts.set(key, (edgeCounts.get(key) ?? 0) + 1);
         }
 
+        const totalFileCount = rows.length;
+        const uncategorizedFileCount = nodeCounts.get('uncategorized') ?? 0;
+        const totalClusterEdgeWeight = [...edgeCounts.values()].reduce((sum, weight) => sum + weight, 0);
+
+        const clusterEdgeTotals = new Map<string, number>();
+        for (const [key, weight] of edgeCounts.entries()) {
+          const [from, to] = key.split('=>');
+          if (!from || !to) continue;
+          clusterEdgeTotals.set(from, (clusterEdgeTotals.get(from) ?? 0) + weight);
+          clusterEdgeTotals.set(to, (clusterEdgeTotals.get(to) ?? 0) + weight);
+        }
+
         const nodes: GraphNode[] = [...nodeCounts.entries()].map(([cluster, file_count]) => ({ id: cluster, cluster, file_count }));
+        nodes.sort((a, b) => {
+          const aUncategorized = (a.id ?? '') === 'uncategorized';
+          const bUncategorized = (b.id ?? '') === 'uncategorized';
+          if (aUncategorized !== bUncategorized) return aUncategorized ? 1 : -1;
+
+          const aEdgeScore = clusterEdgeTotals.get(a.id) ?? 0;
+          const bEdgeScore = clusterEdgeTotals.get(b.id) ?? 0;
+          if (bEdgeScore !== aEdgeScore) return bEdgeScore - aEdgeScore;
+
+          const aFileCount = a.file_count ?? 0;
+          const bFileCount = b.file_count ?? 0;
+          if (bFileCount !== aFileCount) return bFileCount - aFileCount;
+          return a.id.localeCompare(b.id);
+        });
+
         const edges: GraphEdge[] = [];
         for (const [key, weight] of edgeCounts.entries()) {
           const [from, to] = key.split('=>');
           if (!from || !to) continue;
           edges.push({ from, to, weight });
         }
-        edges.sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0) || a.from.localeCompare(b.from));
+
+        edges.sort((a, b) => {
+          const aUncategorized = a.from === 'uncategorized' || a.to === 'uncategorized';
+          const bUncategorized = b.from === 'uncategorized' || b.to === 'uncategorized';
+          if (aUncategorized !== bUncategorized) return aUncategorized ? 1 : -1;
+          return (b.weight ?? 0) - (a.weight ?? 0) || a.from.localeCompare(b.from) || a.to.localeCompare(b.to);
+        });
+
+        const uncategorizedDominates = totalFileCount > 0 && uncategorizedFileCount / totalFileCount >= 0.5;
         if (edges.length > maxEdgeCount) edges.length = maxEdgeCount;
+
+        const clusterLines = nodes.map((node) => {
+          const edgeScore = clusterEdgeTotals.get(node.id) ?? 0;
+          return `- ${node.id}: ${node.file_count ?? 0} files, ${edgeScore} incident edges`;
+        });
+
+        const categorizedEdges = edges.filter((edge) => edge.from !== 'uncategorized' && edge.to !== 'uncategorized');
+        const uncategorizedEdges = edges.filter((edge) => edge.from === 'uncategorized' || edge.to === 'uncategorized');
 
         const text = [
           '## Atlas Graph',
           '',
           `Cluster summary for ${ws}`,
-          ...edges.map((edge) => `- ${edge.from} -> ${edge.to} (${edge.weight} edges)`),
+          `${totalFileCount} files, ${nodes.length} clusters, ${totalClusterEdgeWeight} total edges`,
+          '',
+          'Clusters (sorted by connectivity):',
+          ...clusterLines,
+          '',
+          'Inter-cluster edges:',
+          ...categorizedEdges.map((edge) => `- ${edge.from} -> ${edge.to} (${edge.weight} edges)`),
+          ...(uncategorizedEdges.length > 0
+            ? [
+                '',
+                `Uncategorized edges (de-emphasized): ${uncategorizedEdges.length}`,
+                ...uncategorizedEdges.map((edge) => `- ${edge.from} -> ${edge.to} (${edge.weight} edges)`),
+              ]
+            : []),
+          ...(uncategorizedDominates
+            ? [
+                '',
+                'Most files are uncategorized. Run `atlas_admin action=reindex phase=pass3` to compute community clusters.',
+              ]
+            : []),
         ].join('\n');
 
         const payload = {
@@ -168,8 +230,13 @@ export function registerGraphTool(server: McpServer, runtime: AtlasRuntime): voi
           nodes,
           edges,
           summary: {
+            file_count: totalFileCount,
             cluster_count: nodes.length,
             edge_count: edges.length,
+            total_edge_weight: totalClusterEdgeWeight,
+            uncategorized_file_count: uncategorizedFileCount,
+            uncategorized_edge_count: uncategorizedEdges.length,
+            uncategorized_dominates: uncategorizedDominates,
           },
         };
         return { content: [{ type: 'text', text: formatOutput(out, payload, text) }] };
