@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import type { AtlasDatabase } from '../db.js';
 import { replaceReferencesForFile } from '../db.js';
 import type { Pass0FileInfo } from './pass0.js';
@@ -56,6 +57,112 @@ function resolveRgPath(): string | null {
 
   cachedRgPath = null;
   return null;
+}
+
+/* ── Native grep fallback (zero external deps) ─────────────────────── */
+
+const TS_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts']);
+const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.next', 'docs', '.atlas']);
+const SKIP_GLOBS_SUFFIX = ['.d.ts'];
+
+interface CachedSourceFile {
+  relPath: string;  // relative to sourceRoot, forward slashes
+  lines: string[];
+}
+
+/**
+ * Pre-loads all TS source files into memory for fast symbol lookups.
+ * Built lazily per sourceRoot, reused across all symbols in a pass2 run.
+ */
+class NativeGrepIndex {
+  private files: CachedSourceFile[] = [];
+  private ready = false;
+
+  constructor(private sourceRoot: string) {}
+
+  load(): void {
+    if (this.ready) return;
+    const startMs = Date.now();
+    this.walkDir(this.sourceRoot, '');
+    this.ready = true;
+    console.log(`[atlas-pass2] native grep index: ${this.files.length} files loaded in ${Date.now() - startMs}ms`);
+  }
+
+  private walkDir(absDir: string, relDir: string): void {
+    let entries: string[];
+    try {
+      entries = readdirSync(absDir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const absPath = path.join(absDir, entry);
+      const relPath = relDir ? `${relDir}/${entry}` : entry;
+      let st: ReturnType<typeof statSync> | undefined;
+      try {
+        st = statSync(absPath);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) {
+        // Also skip relay/scripts/codebase-atlas
+        if (relPath === 'relay/scripts/codebase-atlas') continue;
+        this.walkDir(absPath, relPath);
+      } else if (st.isFile()) {
+        const ext = path.extname(entry);
+        if (!TS_EXTENSIONS.has(ext)) continue;
+        if (SKIP_GLOBS_SUFFIX.some((suffix) => entry.endsWith(suffix))) continue;
+        try {
+          const content = readFileSync(absPath, 'utf8');
+          this.files.push({ relPath, lines: content.split('\n') });
+        } catch {
+          // skip unreadable files
+        }
+      }
+    }
+  }
+
+  search(symbolName: string, definingFile: string, contextLines: number): GrepMatchGroup[] {
+    this.load();
+    const normalizedDef = normalizePath(definingFile);
+    const escaped = escapeRegExp(symbolName);
+    const pattern = new RegExp(`\\b${escaped}\\b`);
+    const groups = new Map<string, GrepMatchGroup>();
+
+    for (const file of this.files) {
+      if (normalizePath(file.relPath) === normalizedDef) continue;
+
+      for (let i = 0; i < file.lines.length; i++) {
+        const line = file.lines[i] ?? '';
+        if (!pattern.test(line)) continue;
+
+        const existing = groups.get(file.relPath) ?? { file: file.relPath, matchCount: 0, lines: [] };
+        existing.matchCount += 1;
+        // Collect context lines around the match
+        const start = Math.max(0, i - contextLines);
+        const end = Math.min(file.lines.length - 1, i + contextLines);
+        for (let j = start; j <= end; j++) {
+          existing.lines.push(file.lines[j] ?? '');
+        }
+        groups.set(file.relPath, existing);
+      }
+    }
+
+    return [...groups.values()].sort((left, right) => right.matchCount - left.matchCount || left.file.localeCompare(right.file));
+  }
+}
+
+// One index per sourceRoot, reused across the whole pass2 run
+const nativeIndexCache = new Map<string, NativeGrepIndex>();
+
+function getNativeIndex(sourceRoot: string): NativeGrepIndex {
+  let index = nativeIndexCache.get(sourceRoot);
+  if (!index) {
+    index = new NativeGrepIndex(sourceRoot);
+    nativeIndexCache.set(sourceRoot, index);
+  }
+  return index;
 }
 
 export interface Pass2CallSite {
@@ -247,7 +354,10 @@ function getDeterministicExportedSymbols(
 
 function runGrep(symbolName: string, sourceRoot: string, definingFile: string, contextLines: number): GrepMatchGroup[] {
   const rgPath = resolveRgPath();
-  if (!rgPath) return [];
+  if (!rgPath) {
+    // Fall back to native Node.js grep — slower but zero dependencies
+    return getNativeIndex(sourceRoot).search(symbolName, definingFile, contextLines);
+  }
 
   try {
     const output = execFileSync(rgPath, [
@@ -497,12 +607,10 @@ export async function runPass2(
 
   const rgPath = resolveRgPath();
   if (!rgPath) {
-    console.error(
-      '[atlas-pass2] ❌ ripgrep (rg) NOT FOUND — all cross-references will be empty!\n'
-      + '  Checked: PATH, common locations (/opt/homebrew/bin/rg, /usr/local/bin/rg, /usr/bin/rg), `which rg`\n'
-      + '  Install: brew install ripgrep | apt install ripgrep | cargo install ripgrep\n'
-      + '  Or set RG_BIN=/path/to/rg environment variable.\n'
-      + `  PATH: ${process.env.PATH ?? '(empty)'}`,
+    console.warn(
+      '[atlas-pass2] ripgrep (rg) not found — using native Node.js grep fallback (slower but works)\n'
+      + '  For faster pass2: brew install ripgrep | apt install ripgrep | cargo install ripgrep\n'
+      + '  Or set RG_BIN=/path/to/rg environment variable.',
     );
   } else {
     console.log(`[atlas-pass2] rg resolved: ${rgPath} | sourceRoot: ${options.sourceRoot} | files: ${files.length}`);
