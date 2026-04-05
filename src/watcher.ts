@@ -3,10 +3,10 @@ import fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { getAtlasFile, listImportedBy, populateFts, upsertEmbedding, upsertFileRecord } from './db.js';
-import { runPass05 } from './pipeline/pass05.js';
-import { runPass1 } from './pipeline/pass1.js';
-import { runPass2 } from './pipeline/pass2.js';
-import type { Pass0FileInfo } from './pipeline/pass0.js';
+import { runSummarize } from './pipeline/summarize.js';
+import { runExtract } from './pipeline/extract.js';
+import { runCrossref } from './pipeline/crossref.js';
+import type { ScanFileInfo } from './pipeline/scan.js';
 import type { AtlasFileRecord, AtlasRuntime } from './types.js';
 
 const WATCH_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.md']);
@@ -34,7 +34,7 @@ function hashSource(sourceText: string): string {
   return createHash('sha1').update(sourceText).digest('hex');
 }
 
-function toPass0FileInfo(record: AtlasFileRecord, rootDir: string): {
+function toScanFileInfo(record: AtlasFileRecord, rootDir: string): {
   filePath: string;
   absolutePath: string;
   directory: string;
@@ -52,7 +52,7 @@ function toPass0FileInfo(record: AtlasFileRecord, rootDir: string): {
     loc: record.loc,
     fileHash: record.file_hash ?? '',
     imports: [],
-    exports: record.exports as Pass0FileInfo['exports'],
+    exports: record.exports as ScanFileInfo['exports'],
   };
 }
 
@@ -98,16 +98,16 @@ async function refreshFile(runtime: AtlasRuntime, absolutePath: string): Promise
 
   console.log(`[atlas-watch] refreshing ${filePath}`);
 
-  const pass05 = await runPass05({
+  const summary = await runSummarize({
     db: runtime.db,
     sourceRoot: runtime.config.sourceRoot,
     workspace: runtime.config.workspace,
     provider: runtime.provider,
     files: [record],
   });
-  const blurb = pass05.blurbs[filePath] ?? record.blurb;
+  const blurb = summary.blurbs[filePath] ?? record.blurb;
 
-  const pass1 = await runPass1({
+  const extracted = await runExtract({
     db: runtime.db,
     sourceRoot: runtime.config.sourceRoot,
     workspace: runtime.config.workspace,
@@ -117,14 +117,14 @@ async function refreshFile(runtime: AtlasRuntime, absolutePath: string): Promise
       blurb,
     }],
   });
-  const extraction = pass1.files[filePath];
+  const extraction = extracted.files[filePath];
   if (!extraction) {
-    throw new Error(`Pass 1 returned no extraction for ${filePath}`);
+    throw new Error(`Extract phase returned no extraction for ${filePath}`);
   }
   const refreshedExports = (extraction.exports ?? extraction.public_api.map((entry) => ({
     name: entry.name,
-    type: entry.type as Pass0FileInfo['exports'][number]['type'],
-  }))) as Pass0FileInfo['exports'];
+    type: entry.type as ScanFileInfo['exports'][number]['type'],
+  }))) as ScanFileInfo['exports'];
 
   const embeddingInput = [
     filePath,
@@ -141,13 +141,13 @@ async function refreshFile(runtime: AtlasRuntime, absolutePath: string): Promise
     : new Array<number>(1536).fill(0);
   upsertEmbedding(runtime.db, runtime.config.workspace, filePath, embedding);
 
-  const pass2 = await runPass2([{
-    ...toPass0FileInfo(record, runtime.config.sourceRoot),
+  const xrefs = await runCrossref([{
+    ...toScanFileInfo(record, runtime.config.sourceRoot),
     exports: refreshedExports,
   }], {
     sourceRoot: runtime.config.sourceRoot,
   });
-  const crossRefs = pass2[filePath] ?? {
+  const crossRefs = xrefs[filePath] ?? {
     symbols: {},
     total_exports_analyzed: record.exports.length,
     total_cross_references: 0,

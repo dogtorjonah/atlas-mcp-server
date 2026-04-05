@@ -2,13 +2,13 @@ import type { AtlasDatabase } from '../db.js';
 import { listAtlasFiles, upsertFileRecord } from '../db.js';
 import type { AtlasFileExtraction, AtlasFileRecord, AtlasProvider } from '../types.js';
 import { readSourceFile, toFileUpsertInput } from './shared.js';
-import type { Pass0FileInfo } from './pass0.js';
+import type { ScanFileInfo } from './scan.js';
 
-export interface Pass1Result {
+export interface ExtractResult {
   files: Record<string, AtlasFileExtraction>;
 }
 
-export interface Pass1Options {
+export interface ExtractOptions {
   db: AtlasDatabase;
   sourceRoot: string;
   workspace: string;
@@ -17,15 +17,15 @@ export interface Pass1Options {
   sourceTextLimit?: number;
 }
 
-type Pass1FileInput = Pass0FileInfo | AtlasFileRecord;
+type ExtractFileInput = ScanFileInfo | AtlasFileRecord;
 
-export async function runPass1(files: Pass1FileInput[]): Promise<Pass1Result>;
-export async function runPass1(options: Pass1Options): Promise<Pass1Result>;
-export async function runPass1(
-  input: Pass1FileInput[] | Pass1Options,
-): Promise<Pass1Result> {
+export async function runExtract(files: ExtractFileInput[]): Promise<ExtractResult>;
+export async function runExtract(options: ExtractOptions): Promise<ExtractResult>;
+export async function runExtract(
+  input: ExtractFileInput[] | ExtractOptions,
+): Promise<ExtractResult> {
   if (Array.isArray(input)) {
-    const result: Pass1Result['files'] = {};
+    const result: ExtractResult['files'] = {};
     for (const file of input) {
       const filePath = 'file_path' in file ? file.file_path : file.filePath;
       const fileExports = file.exports ?? [];
@@ -51,7 +51,7 @@ export async function runPass1(
   }
 
   const files = input.files ?? listAtlasFiles(input.db, input.workspace);
-  const result: Pass1Result['files'] = {};
+  const result: ExtractResult['files'] = {};
   const now = new Date().toISOString();
 
   for (const file of files) {

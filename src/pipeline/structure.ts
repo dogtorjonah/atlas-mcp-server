@@ -1,16 +1,16 @@
 /**
- * Pass 0 Structural — Deterministic AST Analysis
+ * Structure Phase — Deterministic AST Analysis
  *
  * Uses Tree-sitter to extract symbol definitions and structural edges
  * (CALLS, EXTENDS, IMPLEMENTS, HAS_METHOD) from source code.
  *
- * Runs after Pass 0 (file discovery) and before Pass 0.5 (LLM blurbs).
+ * Runs after scan (file discovery) and before summarize (LLM blurbs).
  * Writes to existing `symbols` and `references` tables with provenance='ast'.
  */
 
 import type { AtlasDatabase, AtlasSymbolUpsertInput } from '../db.js';
 import { upsertSymbolsForFile } from '../db.js';
-import type { Pass0FileInfo } from './pass0.js';
+import type { ScanFileInfo } from './scan.js';
 import { readSourceFile } from './shared.js';
 import {
   detectAstLanguage,
@@ -24,7 +24,7 @@ import {
 // PUBLIC TYPES
 // ============================================================================
 
-export interface Pass0StructResult {
+export interface StructureResult {
   symbolsExtracted: number;
   edgesExtracted: number;
   filesProcessed: number;
@@ -81,15 +81,15 @@ type GlobalSymbolTable = Map<string, SymbolEntry[]>;
  * 2. Build global symbol table → resolve cross-file edges
  * 3. Write symbols and AST references to DB
  */
-export async function runPass0Struct(
-  files: Pass0FileInfo[],
+export async function runStructure(
+  files: ScanFileInfo[],
   db: AtlasDatabase,
   workspace: string,
   sourceRoot: string,
   onProgress?: (message: string, progress: number) => void,
-): Promise<Pass0StructResult> {
+): Promise<StructureResult> {
   if (!isTreeSitterAvailable()) {
-    console.warn('[pass0-struct] tree-sitter not available, skipping structural analysis');
+    console.warn('[structure] tree-sitter not available, skipping structural analysis');
     return { symbolsExtracted: 0, edgesExtracted: 0, filesProcessed: 0, filesSkipped: files.length };
   }
 
@@ -128,7 +128,7 @@ export async function runPass0Struct(
       filesProcessed++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[pass0-struct] Failed to parse ${file.filePath}: ${msg}`);
+      console.warn(`[structure] Failed to parse ${file.filePath}: ${msg}`);
       filesSkipped++;
     }
 
@@ -1264,7 +1264,7 @@ function buildGlobalSymbolTable(
 function buildImportMap(
   db: AtlasDatabase,
   workspace: string,
-  files: Pass0FileInfo[],
+  files: ScanFileInfo[],
 ): Map<string, Set<string>> {
   const map = new Map<string, Set<string>>();
   const stmt = db.prepare(
@@ -1367,7 +1367,7 @@ function resolveEdges(
  * Write AST-sourced references to the references table.
  * Deletes provenance='ast' rows for ALL processed files (not just those with new edges),
  * so stale AST rows are cleaned even when a file resolves to zero edges.
- * LLM-sourced (pass2) references are preserved.
+ * LLM-sourced (crossref) references are preserved.
  */
 function upsertAstReferences(
   db: AtlasDatabase,

@@ -1,8 +1,8 @@
 /**
- * Pass 0 Flow — Deterministic AST Flow Heuristics
+ * Flow Phase — Deterministic AST Flow Heuristics
  *
  * Uses Tree-sitter to extract higher-level data-flow and control-flow edges
- * from TypeScript/JavaScript files after pass0-struct has populated symbols.
+ * from TypeScript/JavaScript files after the structure phase has populated symbols.
  *
  * Writes a separate AST edge namespace to `references`:
  *   - DATA_FLOWS_TO
@@ -12,7 +12,7 @@
  */
 
 import type { AtlasDatabase } from '../db.js';
-import type { Pass0FileInfo } from './pass0.js';
+import type { ScanFileInfo } from './scan.js';
 import { readSourceFile } from './shared.js';
 import {
   detectAstLanguage,
@@ -22,7 +22,7 @@ import {
   type SyntaxNodeLike,
 } from './treesitter.js';
 
-export interface Pass0FlowResult {
+export interface FlowResult {
   edgesExtracted: number;
   filesProcessed: number;
   filesSkipped: number;
@@ -102,15 +102,15 @@ const NESTED_SCOPE_TYPES = new Set([
   'method_definition',
 ]);
 
-export async function runPass0Flow(
-  files: Pass0FileInfo[],
+export async function runFlow(
+  files: ScanFileInfo[],
   db: AtlasDatabase,
   workspace: string,
   sourceRoot: string,
   onProgress?: (message: string, progress: number) => void,
-): Promise<Pass0FlowResult> {
+): Promise<FlowResult> {
   if (!isTreeSitterAvailable()) {
-    console.warn('[pass0-flow] tree-sitter not available, skipping flow analysis');
+    console.warn('[flow] tree-sitter not available, skipping flow analysis');
     return { edgesExtracted: 0, filesProcessed: 0, filesSkipped: files.length };
   }
 
@@ -150,7 +150,7 @@ export async function runPass0Flow(
       filesProcessed += 1;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[pass0-flow] Failed to parse ${file.filePath}: ${msg}`);
+      console.warn(`[flow] Failed to parse ${file.filePath}: ${msg}`);
       filesSkipped += 1;
     }
 
@@ -532,7 +532,7 @@ function pushSymbolEntry(
 function buildImportMap(
   db: AtlasDatabase,
   workspace: string,
-  files: Pass0FileInfo[],
+  files: ScanFileInfo[],
 ): Map<string, Set<string>> {
   const map = new Map<string, Set<string>>();
   const stmt = db.prepare(

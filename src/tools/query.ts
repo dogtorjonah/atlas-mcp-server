@@ -127,7 +127,7 @@ function buildLookupHint(text: string): string | undefined {
     return '⚠️ This file has high blast radius symbols. Run `atlas_graph action=impact` before modifying.';
   }
   if (!/## Cross-References/i.test(text)) {
-    return 'Cross-references not yet computed. Run `atlas_admin action=reindex phase=pass2` to populate.';
+    return 'Cross-references not yet computed. Run `atlas_admin action=reindex phase=crossref` to populate.';
   }
   return undefined;
 }

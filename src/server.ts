@@ -46,7 +46,7 @@ function parseInitArgs(argv: string[]): {
   skipCostConfirmation: boolean;
   useWizard: boolean;
   force: boolean;
-  phase?: 'pass2';
+  phase?: 'crossref';
   files: string[];
 } {
   const configArgs: string[] = [];
@@ -54,7 +54,7 @@ function parseInitArgs(argv: string[]): {
   let skipCostConfirmation = false;
   let force = false;
   let wizardRequested = false;
-  let phase: 'pass2' | undefined;
+  let phase: 'crossref' | undefined;
   let targetRoot = process.cwd();
   let targetAssigned = false;
 
@@ -76,8 +76,8 @@ function parseInitArgs(argv: string[]): {
     }
     if (arg === '--phase') {
       const value = argv[index + 1];
-      if (value === 'pass2') {
-        phase = 'pass2';
+      if (value === 'crossref') {
+        phase = 'crossref';
       }
       if (value) {
         index += 1;

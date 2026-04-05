@@ -5,17 +5,17 @@ import type { AtlasDatabase, AtlasImportEdgeRecord } from '../db.js';
 import {
   replaceImportEdges,
   upsertFileRecord,
-  upsertPass0Record,
+  upsertScanRecord,
   upsertSymbolsForFile,
 } from '../db.js';
 import { createPhaseProgressReporter } from './progress.js';
 
-export interface Pass0ExportEntry {
+export interface ScanExportEntry {
   name: string;
   type: 'function' | 'class' | 'type' | 'interface' | 'const' | 'enum' | 'default' | 'unknown';
 }
 
-export interface Pass0FileInfo {
+export interface ScanFileInfo {
   filePath: string;
   absolutePath: string;
   directory: string;
@@ -23,13 +23,13 @@ export interface Pass0FileInfo {
   loc: number;
   fileHash: string;
   imports: string[];
-  exports: Pass0ExportEntry[];
+  exports: ScanExportEntry[];
 }
 
-export interface Pass0Result {
+export interface ScanResult {
   workspace: string;
   rootDir: string;
-  files: Pass0FileInfo[];
+  files: ScanFileInfo[];
   importEdges: AtlasImportEdgeRecord[];
 }
 
@@ -159,8 +159,8 @@ function extractImports(content: string): string[] {
   return [...imports];
 }
 
-function extractExports(content: string): Pass0ExportEntry[] {
-  const exports: Pass0ExportEntry[] = [];
+function extractExports(content: string): ScanExportEntry[] {
+  const exports: ScanExportEntry[] = [];
 
   for (const match of content.matchAll(/export\s+(?:async\s+)?function\s+(\w+)/g)) {
     const name = match[1];
@@ -244,24 +244,24 @@ function hashContent(content: string): string {
   return createHash('sha1').update(content).digest('hex');
 }
 
-export async function runPass0(
+export async function runScan(
   sourceRoot: string,
   workspace: string,
   db: AtlasDatabase,
   options?: { force?: boolean },
-): Promise<Pass0Result> {
+): Promise<ScanResult> {
   const absoluteRoot = path.resolve(sourceRoot);
   const sourceFiles = await discoverFiles(absoluteRoot);
-  const files: Pass0FileInfo[] = [];
+  const files: ScanFileInfo[] = [];
   const importEdges: AtlasImportEdgeRecord[] = [];
   const progress = createPhaseProgressReporter([{
-    key: 'pass 0',
+    key: 'scan',
     label: 'Import graph',
     total: sourceFiles.length,
   }]);
 
   for (const absolutePath of sourceFiles) {
-    progress.begin('pass 0');
+    progress.begin('scan');
     const content = await fs.readFile(absolutePath, 'utf8');
     const relativePath = path.relative(absoluteRoot, absolutePath).replaceAll(path.sep, '/');
     const imports = extractImports(content);
@@ -286,7 +286,7 @@ export async function runPass0(
       });
     }
 
-    const fileInfo: Pass0FileInfo = {
+    const fileInfo: ScanFileInfo = {
       filePath: relativePath,
       absolutePath,
       directory: path.dirname(relativePath).replaceAll(path.sep, '/'),
@@ -324,7 +324,7 @@ export async function runPass0(
       });
     } else {
       // Resume-safe: only update structural fields, preserve existing AI data.
-      upsertPass0Record(db, {
+      upsertScanRecord(db, {
         workspace,
         file_path: relativePath,
         file_hash: fileHash,
@@ -349,11 +349,11 @@ export async function runPass0(
       })),
     );
 
-    progress.complete('pass 0');
+    progress.complete('scan');
   }
 
   replaceImportEdges(db, workspace, importEdges);
-  progress.finish(`pass 0 complete: ${files.length} files, ${importEdges.length} edges`);
+  progress.finish(`scan complete: ${files.length} files, ${importEdges.length} edges`);
 
   return {
     workspace,

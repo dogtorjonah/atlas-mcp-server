@@ -1,14 +1,14 @@
 import type { AtlasDatabase } from '../db.js';
 import { listAtlasFiles, upsertFileRecord } from '../db.js';
 import type { AtlasFileRecord, AtlasProvider } from '../types.js';
-import type { Pass0FileInfo } from './pass0.js';
+import type { ScanFileInfo } from './scan.js';
 import { readSourceFile, toFileUpsertInput } from './shared.js';
 
-export interface Pass05Result {
+export interface SummarizeResult {
   blurbs: Record<string, string>;
 }
 
-export interface Pass05Options {
+export interface SummarizeOptions {
   db: AtlasDatabase;
   sourceRoot: string;
   workspace: string;
@@ -17,13 +17,13 @@ export interface Pass05Options {
   sourceTextLimit?: number;
 }
 
-type Pass05FileInput = Pass0FileInfo | AtlasFileRecord;
+type SummarizeFileInput = ScanFileInfo | AtlasFileRecord;
 
-export async function runPass05(files: Pass05FileInput[]): Promise<Pass05Result>;
-export async function runPass05(options: Pass05Options): Promise<Pass05Result>;
-export async function runPass05(
-  input: Pass05FileInput[] | Pass05Options,
-): Promise<Pass05Result> {
+export async function runSummarize(files: SummarizeFileInput[]): Promise<SummarizeResult>;
+export async function runSummarize(options: SummarizeOptions): Promise<SummarizeResult>;
+export async function runSummarize(
+  input: SummarizeFileInput[] | SummarizeOptions,
+): Promise<SummarizeResult> {
   if (Array.isArray(input)) {
     const blurbs: Record<string, string> = {};
     for (const file of input) {

@@ -18,7 +18,7 @@ const MAX_OUTPUT_CHARS = 32_000;
 
 function formatPatternCatalog(patterns: string[], workspace: string, limit: number, totalAvailable?: number): string {
   if (patterns.length === 0) {
-    return `No patterns found in workspace "${workspace}". Patterns are extracted during atlas indexing (pass 1). Run \`atlas_admin action=reindex\` to populate.`;
+    return `No patterns found in workspace "${workspace}". Patterns are extracted during atlas indexing (extract phase). Run \`atlas_admin action=reindex\` to populate.`;
   }
   const showing = totalAvailable && totalAvailable > patterns.length
     ? ` (showing ${patterns.length} of ${totalAvailable})`
@@ -53,7 +53,7 @@ export async function runPatternsTool(runtime: AtlasRuntime, { pattern, workspac
     const available = listDistinctPatterns(runtime.db, ws, 20);
     const catalogHint = available.length > 0
       ? `\n\nAvailable patterns:\n${available.map((p) => `  • ${p}`).join('\n')}`
-      : '\n\nNo patterns found in this workspace. Patterns are extracted during atlas indexing (pass 1).';
+      : '\n\nNo patterns found in this workspace. Patterns are extracted during atlas indexing (extract phase).';
     return {
       content: [{
         type: 'text',

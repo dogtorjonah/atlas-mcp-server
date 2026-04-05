@@ -218,7 +218,7 @@ export function registerGraphTool(server: McpServer, runtime: AtlasRuntime): voi
           ...(uncategorizedDominates
             ? [
                 '',
-                'Most files are uncategorized. Run `atlas_admin action=reindex phase=pass3` to compute community clusters.',
+                'Most files are uncategorized. Run `atlas_admin action=reindex phase=cluster` to compute community clusters.',
               ]
             : []),
         ].join('\n');

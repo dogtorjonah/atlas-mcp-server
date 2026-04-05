@@ -33,7 +33,7 @@ The init wizard walks you through the codebase path, workspace, provider, model,
 | **Gemini** | `gemini-3-flash` | `gemini-embedding-001` |
 | **Ollama** | `llama3.2` (configurable) | `nomic-embed-text` (configurable) |
 
-If no provider API keys are configured, the server runs in **deterministic-only mode** — all phases run, but pass0.5, pass1, and embed produce scaffold placeholders and pseudo-embeddings instead of real LLM output. No external API calls are made.
+If no provider API keys are configured, the server runs in **deterministic-only mode** — all phases run, but summarize, extract, and embed produce scaffold placeholders and pseudo-embeddings instead of real LLM output. No external API calls are made.
 
 ## Tools
 
@@ -84,18 +84,18 @@ The atlas pipeline runs in 8 phases. The first three and last two are fully dete
 
 | Phase | Name | Deterministic? | What it does |
 |-------|------|---------------|--------------|
-| **Pass 0** | Import Graph | ✅ | Builds the import/export graph for the codebase |
-| **Pass 0-struct** | AST Structural | ✅ | Tree-sitter extracts symbols + structural edges (CALLS, EXTENDS, IMPLEMENTS, HAS_METHOD) for all supported languages |
-| **Pass 0-flow** | Data Flow | ✅ | Deterministic TS/JS data-flow heuristics — tracks event emitters, pub/sub, config propagation, and producer/consumer patterns |
-| **Pass 0.5** | Blurbs | ❌ | LLM generates concise one-line blurbs for each file (scaffold placeholder without provider) |
-| **Pass 1** | Deep Extraction | ❌ | LLM produces structured extraction — purpose, public API, patterns, hazards, conventions, key types, data flows, dependencies (scaffold fields without provider) |
+| **Scan** | Import Graph | ✅ | Builds the import/export graph for the codebase |
+| **Structure** | AST Structural | ✅ | Tree-sitter extracts symbols + structural edges (CALLS, EXTENDS, IMPLEMENTS, HAS_METHOD) for all supported languages |
+| **Flow** | Data Flow | ✅ | Deterministic TS/JS data-flow heuristics — tracks event emitters, pub/sub, config propagation, and producer/consumer patterns |
+| **Summarize** | Blurbs | ❌ | LLM generates concise one-line blurbs for each file (scaffold placeholder without provider) |
+| **Extract** | Deep Extraction | ❌ | LLM produces structured extraction — purpose, public API, patterns, hazards, conventions, key types, data flows, dependencies (scaffold fields without provider) |
 | **Embed** | Vectorize | ❌ | Stores vectors for semantic search (pseudo-embeddings without provider) |
-| **Pass 2** | Cross-References | ✅ | Deterministic heuristic cross-ref computation — queries the symbols/references tables from pass0-struct + pass0-flow, falls back to ripgrep for uncovered symbols. Produces per-symbol call sites, usage counts, and blast radius ratings |
-| **Pass 3** | Community Detection | ✅ | Leiden algorithm clusters files into hierarchical communities based on the structural edge graph. Produces named clusters like `pipeline/extraction` or `tools/query` |
+| **Crossref** | Cross-References | ✅ | Deterministic heuristic cross-ref computation — queries the symbols/references tables from the structure + flow phases, falls back to ripgrep for uncovered symbols. Produces per-symbol call sites, usage counts, and blast radius ratings |
+| **Cluster** | Community Detection | ✅ | Leiden algorithm clusters files into hierarchical communities based on the structural edge graph. Produces named clusters like `pipeline/extraction` or `tools/query` |
 
 ### Deterministic-Only Mode
 
-If no provider is configured, passes 0.5, 1, and embed still run but produce scaffold placeholders and pseudo-embeddings instead of real LLM output — zero external API calls. Pass0-struct, pass0-flow, pass2, and pass3 all run with full deterministic analysis, giving you structural symbols, edges, cross-references, and community clusters. Use `atlas_admin action=reindex phase=pass2` to recompute cross-references on demand.
+If no provider is configured, summarize, extract, and embed still run but produce scaffold placeholders and pseudo-embeddings instead of real LLM output — zero external API calls. Structure, flow, crossref, and cluster all run with full deterministic analysis, giving you structural symbols, edges, cross-references, and community clusters. Use `atlas_admin action=reindex phase=crossref` to recompute cross-references on demand.
 
 ### Response-Embedded Guidance
 
@@ -103,7 +103,7 @@ Tool responses include contextual `💡` hints based on the actual query results
 
 - `atlas_query action=lookup` on a file with critical blast radius → *"⚠️ This file has high blast radius symbols. Run `atlas_graph action=impact` before modifying."*
 - `atlas_commit` after success → *"💡 If you changed exports or public API, run `atlas_admin action=reindex` to refresh cross-references."*
-- `atlas_audit action=gaps` finding dead exports → *"💡 Consider removing unused exports, or run `atlas_admin action=reindex phase=pass2` if cross-refs are stale."*
+- `atlas_audit action=gaps` finding dead exports → *"💡 Consider removing unused exports, or run `atlas_admin action=reindex phase=crossref` if cross-refs are stale."*
 
 This makes the standalone MCP server self-guiding — no external orchestrator, hooks, or SOPs needed. The AI gets the right hint at the right moment, tailored to what it just found.
 
@@ -162,7 +162,7 @@ This makes the standalone MCP server self-guiding — no external orchestrator, 
 }
 ```
 
-No API keys needed. All 8 phases run — pass0-struct, pass0-flow, pass2, and pass3 produce full deterministic analysis, while pass0.5, pass1, and embed produce scaffold placeholders and pseudo-embeddings. You get structural symbols, edges, cross-references, community clusters, and graph tools — blurbs and extractions will be scaffolds until a provider is configured.
+No API keys needed. All 8 phases run — structure, flow, crossref, and cluster produce full deterministic analysis, while summarize, extract, and embed produce scaffold placeholders and pseudo-embeddings. You get structural symbols, edges, cross-references, community clusters, and graph tools — blurbs and extractions will be scaffolds until a provider is configured.
 
 ## Configuration
 
@@ -175,7 +175,7 @@ No API keys needed. All 8 phases run — pass0-struct, pass0-flow, pass2, and pa
 | `--concurrency` | Set batch size for init runs |
 | `--yes` | Skip interactive confirmation prompts |
 | `--force` | Delete existing database and rebuild from scratch |
-| `--phase pass2` | Run only pass 2 (cross-refs) during init |
+| `--phase crossref` | Run only the crossref phase (cross-refs) during init |
 | `--file <path>` | Target specific files during init (repeatable) |
 
 ### Environment Variables

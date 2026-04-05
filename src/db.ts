@@ -1034,7 +1034,7 @@ export function replaceReferencesForFile(
   sourceFile: string,
   crossRefs: AtlasCrossRefs | null,
 ): void {
-  // Only delete non-AST references — AST-sourced edges from pass0-struct are preserved
+  // Only delete non-AST references — AST-sourced edges from the structure phase are preserved
   const deleteStmt = db.prepare(
     `DELETE FROM "references" WHERE workspace = ? AND source_file = ? AND provenance != 'ast'`,
   );
@@ -1063,9 +1063,12 @@ export function replaceReferencesForFile(
       return;
     }
 
-    const provenance = refs.pass2_model && refs.pass2_model !== 'heuristic' ? 'llm' : 'inferred';
+    // Backward compat: old data may still have pass2_model / pass2_timestamp
+    const legacy = refs as AtlasCrossRefs & { pass2_model?: string; pass2_timestamp?: string };
+    const model = refs.crossref_model ?? legacy.pass2_model;
+    const provenance = model && model !== 'heuristic' ? 'llm' : 'inferred';
     const confidence = provenance === 'llm' ? 0.8 : 0.6;
-    const verifiedAt = refs.pass2_timestamp ?? null;
+    const verifiedAt = refs.crossref_timestamp ?? legacy.pass2_timestamp ?? null;
 
     for (const [symbolName, symbolData] of Object.entries(refs.symbols)) {
       const cleanName = symbolName.trim();
@@ -1279,7 +1282,7 @@ export function getAtlasFileId(db: AtlasDatabase, workspace: string, filePath: s
  * For new files, inserts with empty AI fields. For existing files with AI data,
  * only the structural columns are touched.
  */
-export function upsertPass0Record(db: AtlasDatabase, record: {
+export function upsertScanRecord(db: AtlasDatabase, record: {
   workspace: string;
   file_path: string;
   file_hash: string | null;
@@ -1352,14 +1355,14 @@ export function isFileComplete(db: AtlasDatabase, workspace: string, filePath: s
 
 /**
  * Check which phase a file has reached (for granular resume).
- * Returns the last completed phase: 'none' | 'pass05' | 'pass1' | 'embed' | 'pass2'
+ * Returns the last completed phase: 'none' | 'summarize' | 'extract' | 'embed' | 'crossref'
  *
  * Phase logic:
- *   - 'none':   no data, or file hash changed → needs full run
- *   - 'pass05': has blurb, but no real extraction (purpose empty or scaffold)
- *   - 'pass1':  has real extraction (purpose + non-scaffold model), but cross_refs
- *               are missing or have no actual symbol data → needs embed + pass2
- *   - 'pass2':  cross_refs contain real symbol data → fully complete
+ *   - 'none':      no data, or file hash changed → needs full run
+ *   - 'summarize': has blurb, but no real extraction (purpose empty or scaffold)
+ *   - 'extract':   has real extraction (purpose + non-scaffold model), but cross_refs
+ *                   are missing or have no actual symbol data → needs embed + crossref
+ *   - 'crossref':  cross_refs contain real symbol data → fully complete
  */
 function hasEmbedding(db: AtlasDatabase, fileId: number): boolean {
   try {
@@ -1373,7 +1376,7 @@ function hasEmbedding(db: AtlasDatabase, fileId: number): boolean {
   }
 }
 
-export function getFilePhase(db: AtlasDatabase, workspace: string, filePath: string, currentHash: string): 'none' | 'pass05' | 'pass1' | 'embed' | 'pass2' {
+export function getFilePhase(db: AtlasDatabase, workspace: string, filePath: string, currentHash: string): 'none' | 'summarize' | 'extract' | 'embed' | 'crossref' {
   const row = db.prepare(
     `SELECT id, file_hash, blurb, purpose, extraction_model, cross_refs
      FROM atlas_files
@@ -1391,34 +1394,34 @@ export function getFilePhase(db: AtlasDatabase, workspace: string, filePath: str
   // If hash changed, file needs full re-processing
   if (row.file_hash !== currentHash) return 'none';
   if (!row.blurb || row.blurb.trim() === '') return 'none';
-  if (!row.purpose || row.purpose.trim() === '' || row.extraction_model === 'scaffold') return 'pass05';
+  if (!row.purpose || row.purpose.trim() === '' || row.extraction_model === 'scaffold') return 'summarize';
 
-  // Has real extraction — at least pass1 complete.
+  // Has real extraction — at least extract complete.
   // Check cross_refs for actual symbol data (not just empty '{}' or 'null').
   const crossRefs = row.cross_refs;
   if (crossRefs && crossRefs !== 'null' && crossRefs !== '{}') {
     try {
       const parsed = JSON.parse(crossRefs);
       // A real cross_refs has a 'symbols' object with at least one key,
-      // OR has total_exports_analyzed > 0 (meaning pass2 ran, even if no symbols found)
+      // OR has total_exports_analyzed > 0 (meaning crossref ran, even if no symbols found)
       if (parsed && typeof parsed === 'object' && (
         (parsed.symbols && Object.keys(parsed.symbols).length > 0) ||
-        (typeof parsed.total_exports_analyzed === 'number' && parsed.total_exports_analyzed >= 0 && parsed.pass2_timestamp)
+        (typeof parsed.total_exports_analyzed === 'number' && parsed.total_exports_analyzed >= 0 && (parsed.crossref_timestamp || parsed.pass2_timestamp))
       )) {
         // Cross-refs exist, but verify embedding also exists.
-        // Embed can silently fail (e.g. broken vec0 table) while pass2 succeeds,
+        // Embed can silently fail (e.g. broken vec0 table) while crossref succeeds,
         // leaving the file stuck without an embedding forever.
         if (!hasEmbedding(db, row.id)) {
-          return 'pass1'; // re-run from embed onwards
+          return 'extract'; // re-run from embed onwards
         }
-        return 'pass2';
+        return 'crossref';
       }
     } catch {
       // Invalid JSON — treat as incomplete
     }
   }
 
-  return 'pass1';
+  return 'extract';
 }
 
 export function upsertEmbedding(

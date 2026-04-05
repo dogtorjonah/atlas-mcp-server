@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AtlasDatabase } from '../db.js';
 import { replaceReferencesForFile } from '../db.js';
-import type { Pass0FileInfo } from './pass0.js';
+import type { ScanFileInfo } from './scan.js';
 
 /* ── ripgrep path resolution ────────────────────────────────────────── */
 
@@ -72,7 +72,7 @@ interface CachedSourceFile {
 
 /**
  * Pre-loads all TS source files into memory for fast symbol lookups.
- * Built lazily per sourceRoot, reused across all symbols in a pass2 run.
+ * Built lazily per sourceRoot, reused across all symbols in a crossref run.
  */
 class NativeGrepIndex {
   private files: CachedSourceFile[] = [];
@@ -85,7 +85,7 @@ class NativeGrepIndex {
     const startMs = Date.now();
     this.walkDir(this.sourceRoot, '');
     this.ready = true;
-    console.log(`[atlas-pass2] native grep index: ${this.files.length} files loaded in ${Date.now() - startMs}ms`);
+    console.log(`[atlas-crossref] native grep index: ${this.files.length} files loaded in ${Date.now() - startMs}ms`);
   }
 
   private walkDir(absDir: string, relDir: string): void {
@@ -153,7 +153,7 @@ class NativeGrepIndex {
   }
 }
 
-// One index per sourceRoot, reused across the whole pass2 run
+// One index per sourceRoot, reused across the whole crossref run
 const nativeIndexCache = new Map<string, NativeGrepIndex>();
 
 function getNativeIndex(sourceRoot: string): NativeGrepIndex {
@@ -165,29 +165,29 @@ function getNativeIndex(sourceRoot: string): NativeGrepIndex {
   return index;
 }
 
-export interface Pass2CallSite {
+export interface CrossrefCallSite {
   file: string;
   usage_type: string;
   count: number;
   context: string;
 }
 
-export interface Pass2SymbolCrossRef {
+export interface CrossrefSymbol {
   type: string;
-  call_sites: Pass2CallSite[];
+  call_sites: CrossrefCallSite[];
   total_usages: number;
   blast_radius: string;
 }
 
-export interface Pass2CrossRef {
-  symbols: Record<string, Pass2SymbolCrossRef>;
+export interface CrossrefResult {
+  symbols: Record<string, CrossrefSymbol>;
   total_exports_analyzed: number;
   total_cross_references: number;
-  pass2_model?: string;
-  pass2_timestamp?: string;
+  crossref_model?: string;
+  crossref_timestamp?: string;
 }
 
-export interface Pass2Options {
+export interface CrossrefOptions {
   sourceRoot: string;
   // Compatibility only while orchestration lanes remove provider coupling.
   provider?: unknown;
@@ -309,7 +309,7 @@ export function extractExportedSymbols(sourceText: string): ExportedSymbol[] {
 }
 
 function getDeterministicExportedSymbols(
-  file: Pass0FileInfo,
+  file: ScanFileInfo,
   sourceText: string,
   db?: AtlasDatabase,
   workspace?: string,
@@ -449,14 +449,14 @@ function runGrep(symbolName: string, sourceRoot: string, definingFile: string, c
     const signal = typeof error === 'object' && error && 'signal' in error ? (error as { signal?: string }).signal : undefined;
     const errCode = typeof error === 'object' && error && 'code' in error ? (error as { code?: string }).code : undefined;
     console.warn(
-      `[atlas-pass2] rg lookup failed for symbol="${symbolName}" file="${definingFile}" `
+      `[atlas-crossref] rg lookup failed for symbol="${symbolName}" file="${definingFile}" `
       + `(status=${String(code ?? 'n/a')} code=${String(errCode ?? 'n/a')} signal=${String(signal ?? 'n/a')} syscall=${String(syscall ?? 'n/a')})`,
     );
     return [];
   }
 }
 
-function buildFallbackCallSites(symbolName: string, groups: GrepMatchGroup[], maxGrepHits: number): Pass2CallSite[] {
+function buildFallbackCallSites(symbolName: string, groups: GrepMatchGroup[], maxGrepHits: number): CrossrefCallSite[] {
   return groups
     .slice(0, maxGrepHits)
     .map((group) => ({
@@ -525,8 +525,8 @@ function mapEdgeTypeToUsageType(edgeType: string): string {
 function buildDeterministicCallSites(
   rows: ReferenceUsageRow[],
   grepByFile: Map<string, GrepMatchGroup>,
-): Pass2CallSite[] {
-  const grouped = new Map<string, Pass2CallSite>();
+): CrossrefCallSite[] {
+  const grouped = new Map<string, CrossrefCallSite>();
 
   for (const row of rows) {
     const file = String(row.source_file ?? '').trim();
@@ -564,7 +564,7 @@ function buildHeuristicCrossRef(
   usageRows: ReferenceUsageRow[],
   grepGroups: GrepMatchGroup[],
   maxGrepHits: number,
-): Pass2SymbolCrossRef {
+): CrossrefSymbol {
   const grepByFile = new Map(grepGroups.map((group) => [group.file, group]));
   const deterministicCallSites = buildDeterministicCallSites(usageRows, grepByFile);
 
@@ -583,11 +583,11 @@ function buildHeuristicCrossRef(
   };
 }
 
-export function persistPass2CrossRefs(
+export function persistCrossRefs(
   db: import('../db.js').AtlasDatabase,
   workspace: string,
   filePath: string,
-  crossRefs: Pass2CrossRef,
+  crossRefs: CrossrefResult,
 ): void {
   db.prepare(
     `UPDATE atlas_files
@@ -597,23 +597,23 @@ export function persistPass2CrossRefs(
   replaceReferencesForFile(db, workspace, filePath, crossRefs);
 }
 
-export async function runPass2(
-  files: Pass0FileInfo[],
-  options: Pass2Options,
-): Promise<Record<string, Pass2CrossRef>> {
-  const result: Record<string, Pass2CrossRef> = {};
+export async function runCrossref(
+  files: ScanFileInfo[],
+  options: CrossrefOptions,
+): Promise<Record<string, CrossrefResult>> {
+  const result: Record<string, CrossrefResult> = {};
   const contextLines = options.contextLines ?? 2;
   const maxGrepHits = options.maxGrepHits ?? 10;
 
   const rgPath = resolveRgPath();
   if (!rgPath) {
     console.warn(
-      '[atlas-pass2] ripgrep (rg) not found — using native Node.js grep fallback (slower but works)\n'
-      + '  For faster pass2: brew install ripgrep | apt install ripgrep | cargo install ripgrep\n'
+      '[atlas-crossref] ripgrep (rg) not found — using native Node.js grep fallback (slower but works)\n'
+      + '  For faster crossref: brew install ripgrep | apt install ripgrep | cargo install ripgrep\n'
       + '  Or set RG_BIN=/path/to/rg environment variable.',
     );
   } else {
-    console.log(`[atlas-pass2] rg resolved: ${rgPath} | sourceRoot: ${options.sourceRoot} | files: ${files.length}`);
+    console.log(`[atlas-crossref] rg resolved: ${rgPath} | sourceRoot: ${options.sourceRoot} | files: ${files.length}`);
   }
 
   for (const file of files) {
@@ -623,7 +623,7 @@ export async function runPass2(
       ? listDeterministicUsages(options.db, options.workspace, file.filePath)
       : [];
     const usageRowsBySymbol = groupUsagesBySymbol(usageRows);
-    const symbols: Record<string, Pass2SymbolCrossRef> = {};
+    const symbols: Record<string, CrossrefSymbol> = {};
 
     for (const exportedSymbol of exportedSymbols) {
       const grepGroups = runGrep(exportedSymbol.name, options.sourceRoot, file.filePath, contextLines);
@@ -637,12 +637,12 @@ export async function runPass2(
       );
     }
 
-    const crossRefs: Pass2CrossRef = {
+    const crossRefs: CrossrefResult = {
       symbols,
       total_exports_analyzed: exportedSymbols.length,
       total_cross_references: Object.values(symbols).reduce((sum, symbol) => sum + symbol.total_usages, 0),
-      pass2_model: 'heuristic',
-      pass2_timestamp: new Date().toISOString(),
+      crossref_model: 'heuristic',
+      crossref_timestamp: new Date().toISOString(),
     };
 
     result[file.filePath] = crossRefs;

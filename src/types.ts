@@ -63,8 +63,8 @@ export interface AtlasCrossRefs {
   symbols: Record<string, AtlasCrossRefSymbol>;
   total_exports_analyzed: number;
   total_cross_references: number;
-  pass2_model?: string;
-  pass2_timestamp?: string;
+  crossref_model?: string;
+  crossref_timestamp?: string;
 }
 
 export interface AtlasFileRecord {

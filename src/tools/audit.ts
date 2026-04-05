@@ -746,7 +746,7 @@ async function runGapsAction(
   if (findings.some((finding) => finding.gapType === 'exported_not_referenced')) {
     content.push({
       type: 'text',
-      text: '💡 Consider removing unused exports, or run `atlas_admin action=reindex phase=pass2` if they might be stale cross-refs.',
+      text: '💡 Consider removing unused exports, or run `atlas_admin action=reindex phase=crossref` if they might be stale cross-refs.',
     });
   }
   return { content };
@@ -1051,7 +1051,7 @@ export function registerAuditTool(server: McpServer, runtime: AtlasRuntime): voi
       'Use atlas_audit when you want actionable quality signals instead of raw retrieval or graph traversal.',
       'Actions: gaps finds structural negative space such as exported-but-unreferenced, imported-but-unused, or loaded-but-unused artifacts; smells ranks files by combined maintainability signals; hotspots ranks files by risk using churn, coupling, hazards, and reference activity.',
       'Workflow hints: run gaps during cleanup or after refactors to find dead or stale wiring; run smells when you need a short list of high-friction files worth redesigning; run hotspots before investing review time so you start with the riskiest files or clusters first. Scope by cluster when exploring one subsystem and exclude tests only when you are sure you want production-facing signals only.',
-      'The results are stronger now because they can lean on richer Atlas inputs, including AST-derived structure, deterministic flow analysis, pass2 cross-reference context, and community clustering to identify where complexity and coupling accumulate.',
+      'The results are stronger now because they can lean on richer Atlas inputs, including AST-derived structure, deterministic flow analysis, crossref phase context, and community clustering to identify where complexity and coupling accumulate.',
     ].join('\n'),
     {
       action: z.enum(['gaps', 'smells', 'hotspots']),
