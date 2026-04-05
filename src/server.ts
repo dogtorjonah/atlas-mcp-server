@@ -11,28 +11,9 @@ import { createOpenAIProvider } from './providers/openai.js';
 import { createOllamaProvider } from './providers/ollama.js';
 import { runFullPipeline } from './pipeline/index.js';
 import { startAtlasWatcher } from './watcher.js';
-import { registerLookupTool } from './tools/lookup.js';
-import { registerBriefTool } from './tools/brief.js';
-import { registerSnippetTool } from './tools/snippet.js';
-import { registerReindexTool } from './tools/reindex.js';
-import { registerSearchTool } from './tools/search.js';
-import { registerClusterTool } from './tools/cluster.js';
-import { registerPatternsTool } from './tools/patterns.js';
-import { registerImpactTool } from './tools/impact.js';
-import { registerGapsTool } from './tools/gaps.js';
-import { registerReachabilityTool } from './tools/reachability.js';
-import { registerNeighborsTool } from './tools/neighbors.js';
-import { registerTraceTool } from './tools/trace.js';
-import { registerCyclesTool } from './tools/cycles.js';
-import { registerHistoryTool } from './tools/history.js';
-import { registerHotspotsTool } from './tools/hotspots.js';
-import { registerSimilarTool } from './tools/similar.js';
-import { registerPlanContextTool } from './tools/plan_context.js';
-import { registerSmellsTool } from './tools/smells.js';
-import { registerBridgeTools } from './tools/bridge.js';
 import { registerChangelogTools } from './tools/changelog.js';
 import { registerCommitTool } from './tools/commit.js';
-// Composite tools (consolidation: 21 → 5)
+// Composite tools (21 → 5 consolidation — individual tools removed)
 import { registerQueryTool } from './tools/query.js';
 import { registerGraphCompositeTool } from './tools/graphComposite.js';
 import { registerAuditTool } from './tools/audit.js';
@@ -290,31 +271,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }),
   );
 
-  registerSearchTool(server, runtime);
-  registerBriefTool(server, runtime);
-  registerSnippetTool(server, runtime);
-  registerLookupTool(server, runtime);
-  registerClusterTool(server, runtime);
-  registerPatternsTool(server, runtime);
-  registerImpactTool(server, runtime);
-  registerGapsTool(server, runtime);
-  registerReachabilityTool(server, runtime);
-  registerNeighborsTool(server, runtime);
-  registerTraceTool(server, runtime);
-  registerCyclesTool(server, runtime);
-  registerHistoryTool(server, runtime);
-  registerHotspotsTool(server, runtime);
-  registerSimilarTool(server, runtime);
-  registerPlanContextTool(server, runtime);
-  registerSmellsTool(server, runtime);
+  // ── Standalone tools (not in any composite) ──
   registerChangelogTools(server, runtime);
   registerCommitTool(server, runtime);
-  registerReindexTool(server, runtime);
-  registerBridgeTools(server, runtime);
 
   // ── Composite tools (21 → 5 consolidation) ──
-  // These coexist with the standalone tools above for backward compatibility.
-  // Agents can use either atlas_query({action:"search",...}) or atlas_search({...}).
+  // atlas_query:  search, lookup, brief, snippet, similar, plan_context, cluster, patterns, history
+  // atlas_graph:  impact, neighbors, trace, cycles, reachability, graph
+  // atlas_audit:  gaps, smells, hotspots
+  // atlas_admin:  reindex, bridge_list
   registerQueryTool(server, runtime);
   registerGraphCompositeTool(server, runtime);
   registerAuditTool(server, runtime);

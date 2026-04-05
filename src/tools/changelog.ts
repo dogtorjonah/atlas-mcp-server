@@ -119,13 +119,127 @@ function formatEntry(entry: AtlasChangelogRecord): string {
   ].join('\n');
 }
 
+// ── Log action handler ──
+async function handleLog(runtime: AtlasRuntime, args: Record<string, unknown>) {
+  const file_path = args.file_path as string;
+  const summary = args.summary as string;
+  if (!file_path || !summary) {
+    return { content: [{ type: 'text' as const, text: 'atlas_changelog(action=log) requires file_path and summary.' }] };
+  }
+
+  const entry = insertAtlasChangelog(runtime.db, {
+    workspace: runtime.config.workspace,
+    file_path,
+    summary,
+    patterns_added: args.patterns_added as string[] | undefined,
+    patterns_removed: args.patterns_removed as string[] | undefined,
+    hazards_added: args.hazards_added as string[] | undefined,
+    hazards_removed: args.hazards_removed as string[] | undefined,
+    cluster: (args.cluster as string) ?? null,
+    breaking_changes: args.breaking_changes as boolean | undefined,
+    commit_sha: (args.commit_sha as string) ?? null,
+    author_instance_id: (args.author_instance_id as string) ?? null,
+    author_engine: (args.author_engine as string) ?? null,
+    review_entry_id: (args.review_entry_id as string) ?? null,
+  });
+
+  if (runtime.provider) {
+    const embeddingInput = buildEmbeddingInput(entry);
+    if (embeddingInput) {
+      try {
+        const embedding = await runtime.provider.embedText(embeddingInput);
+        upsertChangelogEmbedding(runtime.db, entry.id, embedding);
+      } catch {
+        // Embedding failures are non-fatal; FTS remains available.
+      }
+    }
+  }
+
+  return {
+    content: [
+      { type: 'text' as const, text: `Logged atlas changelog entry ${entry.id} for ${entry.file_path}.\n\n${formatEntry(entry)}` },
+      { type: 'text' as const, text: '💡 Use `atlas_changelog action=query file=<path>` to review this file\'s full change history.' },
+    ],
+  };
+}
+
+// ── Query action handler ──
+async function handleQuery(runtime: AtlasRuntime, args: Record<string, unknown>) {
+  const file = args.file as string | undefined;
+  const file_prefix = args.file_prefix as string | undefined;
+  const query = args.query as string | undefined;
+  const cluster = args.cluster as string | undefined;
+  const since = args.since as string | undefined;
+  const until = args.until as string | undefined;
+  const verification_status = args.verification_status as string | undefined;
+  const breaking_only = args.breaking_only as boolean | undefined;
+  const limit = args.limit as number | undefined;
+  const workspace = args.workspace as string | undefined;
+
+  const activeWorkspace = workspace ?? runtime.config.workspace;
+  const maxResults = Math.max(1, Math.min(limit ?? 20, 100));
+  const filterSet = { file, file_prefix, cluster, since, until, verification_status, breaking_only };
+
+  let entries: AtlasChangelogRecord[];
+  if (query) {
+    const candidateLimit = Math.min(100, Math.max(maxResults * 5, 25));
+    const bm25Results = mapHitsToRanked(searchChangelogFts(runtime.db, activeWorkspace, query, candidateLimit));
+
+    let vectorResults: RankedResult[] = [];
+    if (runtime.provider) {
+      try {
+        const embedding = await runtime.provider.embedText(query);
+        vectorResults = mapHitsToRanked(searchChangelogVector(runtime.db, activeWorkspace, embedding, candidateLimit));
+      } catch {
+        vectorResults = [];
+      }
+    }
+
+    const fused = fuseResults(bm25Results, vectorResults);
+    entries = fused
+      .map((result) => result.record)
+      .filter((entry) => matchesFilters(entry, filterSet))
+      .slice(0, maxResults);
+  } else {
+    entries = queryAtlasChangelog(runtime.db, {
+      workspace: activeWorkspace,
+      file,
+      file_prefix,
+      cluster,
+      since,
+      until,
+      verification_status,
+      breaking_only,
+      limit: maxResults,
+    });
+  }
+
+  trackQuery(
+    query || file || file_prefix || cluster || 'atlas_changelog',
+    entries.map((entry) => entry.id),
+    [...new Set(entries.map((entry) => entry.file_path))],
+  );
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: entries.length === 0
+        ? 'No atlas changelog entries matched.'
+        : entries.map(formatEntry).join('\n\n'),
+    }],
+  };
+}
+
+// ── Composite registration ──
 export function registerChangelogTools(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
-    'atlas_log',
-    'Record a changelog entry for a file — patterns added/removed, hazards, breaking changes. Use atlas_commit instead for combined changelog + atlas update in one call.',
+    'atlas_changelog',
+    'Unified changelog tool. Actions: log records a new changelog entry for a file (patterns, hazards, breaking changes); query retrieves changelog history with filters (file, cluster, date range, breaking-only, verification status). Use atlas_commit instead of log for combined changelog + atlas update in one call.',
     {
-      file_path: z.string().min(1),
-      summary: z.string().min(1),
+      action: z.enum(['log', 'query']),
+      // log action params
+      file_path: z.string().optional(),
+      summary: z.string().optional(),
       patterns_added: z.array(z.string()).optional(),
       patterns_removed: z.array(z.string()).optional(),
       hazards_added: z.array(z.string()).optional(),
@@ -136,79 +250,10 @@ export function registerChangelogTools(server: McpServer, runtime: AtlasRuntime)
       author_instance_id: z.string().optional(),
       author_engine: z.string().optional(),
       review_entry_id: z.string().optional(),
-    },
-    async ({
-      file_path,
-      summary,
-      patterns_added,
-      patterns_removed,
-      hazards_added,
-      hazards_removed,
-      cluster,
-      breaking_changes,
-      commit_sha,
-      author_instance_id,
-      author_engine,
-      review_entry_id,
-    }: {
-      file_path: string;
-      summary: string;
-      patterns_added?: string[];
-      patterns_removed?: string[];
-      hazards_added?: string[];
-      hazards_removed?: string[];
-      cluster?: string;
-      breaking_changes?: boolean;
-      commit_sha?: string;
-      author_instance_id?: string;
-      author_engine?: string;
-      review_entry_id?: string;
-    }) => {
-      const entry = insertAtlasChangelog(runtime.db, {
-        workspace: runtime.config.workspace,
-        file_path,
-        summary,
-        patterns_added,
-        patterns_removed,
-        hazards_added,
-        hazards_removed,
-        cluster: cluster ?? null,
-        breaking_changes,
-        commit_sha: commit_sha ?? null,
-        author_instance_id: author_instance_id ?? null,
-        author_engine: author_engine ?? null,
-        review_entry_id: review_entry_id ?? null,
-      });
-
-      if (runtime.provider) {
-        const embeddingInput = buildEmbeddingInput(entry);
-        if (embeddingInput) {
-          try {
-            const embedding = await runtime.provider.embedText(embeddingInput);
-            upsertChangelogEmbedding(runtime.db, entry.id, embedding);
-          } catch {
-            // Embedding failures are non-fatal; FTS remains available.
-          }
-        }
-      }
-
-      return {
-        content: [{
-          type: 'text',
-          text: `Logged atlas changelog entry ${entry.id} for ${entry.file_path}.\n\n${formatEntry(entry)}`,
-        }],
-      };
-    },
-  );
-
-  toolWithDescription(server)(
-    'atlas_changelog',
-    'Query changelog history with filters: by file, cluster, date range, breaking-only, or verification status. Returns timestamped changelog entries showing what changed and why.',
-    {
+      // query action params
       file: z.string().optional(),
       file_prefix: z.string().optional(),
       query: z.string().optional(),
-      cluster: z.string().optional(),
       since: z.string().optional(),
       until: z.string().optional(),
       verification_status: z.string().optional(),
@@ -216,89 +261,16 @@ export function registerChangelogTools(server: McpServer, runtime: AtlasRuntime)
       limit: z.number().int().min(1).max(100).optional(),
       workspace: z.string().optional(),
     },
-    async ({
-      file,
-      file_prefix,
-      query,
-      cluster,
-      since,
-      until,
-      verification_status,
-      breaking_only,
-      limit,
-      workspace,
-    }: {
-      file?: string;
-      file_prefix?: string;
-      query?: string;
-      cluster?: string;
-      since?: string;
-      until?: string;
-      verification_status?: string;
-      breaking_only?: boolean;
-      limit?: number;
-      workspace?: string;
-    }) => {
-      const activeWorkspace = workspace ?? runtime.config.workspace;
-      const maxResults = Math.max(1, Math.min(limit ?? 20, 100));
-      const filterSet = {
-        file,
-        file_prefix,
-        cluster,
-        since,
-        until,
-        verification_status,
-        breaking_only,
-      };
-
-      let entries: AtlasChangelogRecord[];
-      if (query) {
-        const candidateLimit = Math.min(100, Math.max(maxResults * 5, 25));
-        const bm25Results = mapHitsToRanked(searchChangelogFts(runtime.db, activeWorkspace, query, candidateLimit));
-
-        let vectorResults: RankedResult[] = [];
-        if (runtime.provider) {
-          try {
-            const embedding = await runtime.provider.embedText(query);
-            vectorResults = mapHitsToRanked(searchChangelogVector(runtime.db, activeWorkspace, embedding, candidateLimit));
-          } catch {
-            vectorResults = [];
-          }
-        }
-
-        const fused = fuseResults(bm25Results, vectorResults);
-        entries = fused
-          .map((result) => result.record)
-          .filter((entry) => matchesFilters(entry, filterSet))
-          .slice(0, maxResults);
-      } else {
-        entries = queryAtlasChangelog(runtime.db, {
-          workspace: activeWorkspace,
-          file,
-          file_prefix,
-          cluster,
-          since,
-          until,
-          verification_status,
-          breaking_only,
-          limit: maxResults,
-        });
+    async (args: Record<string, unknown>) => {
+      const { action } = args;
+      switch (action) {
+        case 'log':
+          return handleLog(runtime, args);
+        case 'query':
+          return handleQuery(runtime, args);
+        default:
+          return { content: [{ type: 'text' as const, text: `Unknown atlas_changelog action: ${action}. Use "log" or "query".` }] };
       }
-
-      trackQuery(
-        query || file || file_prefix || cluster || 'atlas_changelog',
-        entries.map((entry) => entry.id),
-        [...new Set(entries.map((entry) => entry.file_path))],
-      );
-
-      return {
-        content: [{
-          type: 'text',
-          text: entries.length === 0
-            ? 'No atlas changelog entries matched.'
-            : entries.map(formatEntry).join('\n\n'),
-        }],
-      };
     },
   );
 }
