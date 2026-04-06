@@ -22,6 +22,25 @@ These fields are populated **organically by agents** as they work with the codeb
 
 **The more you use Atlas, the smarter it gets.** Each `atlas_commit` enriches the index, improves BM25 search results, and helps future agents orient faster.
 
+### Structured Fields Are Required
+
+`atlas_commit` enforces that every call includes **at least one structured metadata field** — not just a summary. After each commit, the tool audits the record and reports coverage as a percentage of 9 tracked fields. If coverage is below 50%, the agent gets a loud warning:
+
+> ⚠️ LOW COVERAGE — this entry is still mostly hollow. The whole point of atlas_commit is replacing AI extraction with agent knowledge.
+
+At minimum, agents should fill: `purpose` + `blurb` + `hazards` + `patterns`. The summary alone is not enough — structured fields are what make the atlas queryable.
+
+### Atlas Commit File Claims (Multi-Agent Safety)
+
+When multiple agents enrich the atlas in parallel, two can race on the same file — both read the existing record, both merge, the second write stomps the first. Atlas commit includes an **in-memory file claim system** that prevents this:
+
+- Before writing, `atlas_commit` acquires a claim on the `(workspace, file_path)` pair
+- If another agent holds the claim, the call returns a conflict message with the holder ID and time remaining
+- Claims auto-expire after 30 seconds (crash safety) with periodic cleanup
+- The claim is always released after the write completes, even on error
+
+This eliminates the duplicate collision waste seen during wide atlas enrichment missions. For best results, **partition agents by cluster** so they rarely contend on the same files.
+
 ### AI-Curated Source Highlights
 
 Instead of naively truncating source code at a line limit, agents curate the most important code sections during `atlas_commit`. Each highlight is a numbered, labeled snippet that can represent disjointed segments from anywhere in the file.
@@ -40,9 +59,23 @@ Atlas provides BM25 full-text search via SQLite FTS5. Results are ranked by rele
 |------|---------|
 | `atlas_query` | Composite retrieval: search, lookup, brief, snippet, similar, plan_context, cluster, patterns, history |
 | `atlas_graph` | Topology analysis: impact, neighbors, trace, cycles, reachability, graph |
-| `atlas_audit` | Quality scans: gaps, smells, hotspots |
+| `atlas_audit` | Quality scans: gaps (including `incomplete_atlas_entry`), smells, hotspots |
 | `atlas_admin` | Operations: bridge_list, reindex, flush |
 | `atlas_commit` | Post-edit writeback: records change rationale and updates file metadata |
+
+## Quality Auditing
+
+`atlas_audit action=gaps` detects five types of structural gaps:
+
+| Gap Type | What It Finds |
+|----------|---------------|
+| `loaded_not_used` | Data loaded/derived but never referenced downstream |
+| `exported_not_referenced` | Exports with zero call sites across the codebase |
+| `imported_not_used` | Import edges where bindings are never used |
+| `installed_not_imported` | npm packages declared in package.json but never imported |
+| `incomplete_atlas_entry` | **Files with hollow atlas records** — missing blurb, purpose, cross_refs, hazards, conventions, key_types, or data_flows |
+
+The `incomplete_atlas_entry` gap type is particularly useful during wide enrichment missions — it tells you exactly which files still need agent attention and which specific fields are empty, so you can prioritize work instead of guessing.
 
 ## Quick Start
 
