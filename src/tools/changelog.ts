@@ -4,7 +4,6 @@ import type { AtlasRuntime } from '../types.js';
 import { toolWithDescription } from './helpers.js';
 import type { AtlasChangelogRecord, AtlasChangelogSearchHit } from '../db.js';
 import {
-  insertAtlasChangelog,
   queryAtlasChangelog,
   searchChangelogFts,
 } from '../db.js';
@@ -107,38 +106,6 @@ function formatEntry(entry: AtlasChangelogRecord): string {
   ].join('\n');
 }
 
-// ── Log action handler ──
-async function handleLog(runtime: AtlasRuntime, args: Record<string, unknown>) {
-  const file_path = args.file_path as string;
-  const summary = args.summary as string;
-  if (!file_path || !summary) {
-    return { content: [{ type: 'text' as const, text: 'atlas_changelog(action=log) requires file_path and summary.' }] };
-  }
-
-  const entry = insertAtlasChangelog(runtime.db, {
-    workspace: runtime.config.workspace,
-    file_path,
-    summary,
-    patterns_added: args.patterns_added as string[] | undefined,
-    patterns_removed: args.patterns_removed as string[] | undefined,
-    hazards_added: args.hazards_added as string[] | undefined,
-    hazards_removed: args.hazards_removed as string[] | undefined,
-    cluster: (args.cluster as string) ?? null,
-    breaking_changes: args.breaking_changes as boolean | undefined,
-    commit_sha: (args.commit_sha as string) ?? null,
-    author_instance_id: (args.author_instance_id as string) ?? null,
-    author_engine: (args.author_engine as string) ?? null,
-    review_entry_id: (args.review_entry_id as string) ?? null,
-  });
-
-  return {
-    content: [
-      { type: 'text' as const, text: `Logged atlas changelog entry ${entry.id} for ${entry.file_path}.\n\n${formatEntry(entry)}` },
-      { type: 'text' as const, text: '💡 Use `atlas_changelog action=query file=<path>` to review this file\'s full change history.' },
-    ],
-  };
-}
-
 // ── Query action handler ──
 async function handleQuery(runtime: AtlasRuntime, args: Record<string, unknown>) {
   const file = args.file as string | undefined;
@@ -200,43 +167,27 @@ async function handleQuery(runtime: AtlasRuntime, args: Record<string, unknown>)
 export function registerChangelogTools(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_changelog',
-    'Unified changelog tool. Actions: log records a new changelog entry for a file (patterns, hazards, breaking changes); query retrieves changelog history with filters (file, cluster, date range, breaking-only, verification status). Use atlas_commit instead of log for combined changelog + atlas update in one call.',
+    'Query changelog history for atlas entries. Retrieves changelog entries with filters (file, cluster, date range, breaking-only, verification status, free-text search). To WRITE changelog entries, use atlas_commit — it records changelog automatically when you pass patterns_added/removed or hazards_added/removed.',
     {
-      action: z.enum(['log', 'query']),
-      // log action params
-      file_path: z.string().optional(),
-      summary: z.string().optional(),
-      patterns_added: z.array(z.string()).optional(),
-      patterns_removed: z.array(z.string()).optional(),
-      hazards_added: z.array(z.string()).optional(),
-      hazards_removed: z.array(z.string()).optional(),
-      cluster: z.string().optional(),
-      breaking_changes: z.boolean().optional(),
-      commit_sha: z.string().optional(),
-      author_instance_id: z.string().optional(),
-      author_engine: z.string().optional(),
-      review_entry_id: z.string().optional(),
+      action: z.enum(['query']).describe('Action to perform. Only "query" is supported — writing is handled by atlas_commit.'),
       // query action params
-      file: z.string().optional(),
-      file_prefix: z.string().optional(),
-      query: z.string().optional(),
-      since: z.string().optional(),
-      until: z.string().optional(),
-      verification_status: z.string().optional(),
-      breaking_only: z.boolean().optional(),
-      limit: z.number().int().min(1).max(100).optional(),
-      workspace: z.string().optional(),
+      file: z.string().optional().describe('Exact file path to filter by'),
+      file_prefix: z.string().optional().describe('File path prefix to filter by (e.g. "src/stores/")'),
+      query: z.string().optional().describe('Free-text search across changelog entries'),
+      cluster: z.string().optional().describe('Filter by cluster name'),
+      since: z.string().optional().describe('ISO date — only entries after this date'),
+      until: z.string().optional().describe('ISO date — only entries before this date'),
+      verification_status: z.string().optional().describe('Filter by verification status'),
+      breaking_only: z.boolean().optional().describe('If true, only return entries with breaking changes'),
+      limit: z.number().int().min(1).max(100).optional().describe('Max results (default 20, max 100)'),
+      workspace: z.string().optional().describe('Override workspace (defaults to current)'),
     },
     async (args: Record<string, unknown>) => {
       const { action } = args;
-      switch (action) {
-        case 'log':
-          return handleLog(runtime, args);
-        case 'query':
-          return handleQuery(runtime, args);
-        default:
-          return { content: [{ type: 'text' as const, text: `Unknown atlas_changelog action: ${action}. Use "log" or "query".` }] };
+      if (action === 'query') {
+        return handleQuery(runtime, args);
       }
+      return { content: [{ type: 'text' as const, text: `Unknown action: ${action}. Only "query" is supported. To write changelog entries, use atlas_commit with patterns_added/hazards_added fields.` }] };
     },
   );
 }
