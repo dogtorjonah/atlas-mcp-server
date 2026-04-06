@@ -2,9 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { getAtlasFile, listImportedBy, populateFts, upsertEmbedding, upsertFileRecord } from './db.js';
-import { runSummarize } from './pipeline/summarize.js';
-import { runExtract } from './pipeline/extract.js';
+import { getAtlasFile, listImportedBy, populateFts, upsertFileRecord } from './db.js';
 import { runCrossref } from './pipeline/crossref.js';
 import type { ScanFileInfo } from './pipeline/scan.js';
 import type { AtlasFileRecord, AtlasRuntime } from './types.js';
@@ -34,16 +32,7 @@ function hashSource(sourceText: string): string {
   return createHash('sha1').update(sourceText).digest('hex');
 }
 
-function toScanFileInfo(record: AtlasFileRecord, rootDir: string): {
-  filePath: string;
-  absolutePath: string;
-  directory: string;
-  cluster: string;
-  loc: number;
-  fileHash: string;
-  imports: string[];
-  exports: Array<{ name: string; type: string }>;
-} {
+function toScanFileInfo(record: AtlasFileRecord, rootDir: string): ScanFileInfo {
   return {
     filePath: record.file_path,
     absolutePath: path.join(rootDir, record.file_path),
@@ -98,54 +87,15 @@ async function refreshFile(runtime: AtlasRuntime, absolutePath: string): Promise
 
   console.log(`[atlas-watch] refreshing ${filePath}`);
 
-  const summary = await runSummarize({
+  // Heuristic-only: re-run crossref (deterministic, no LLM).
+  // Semantic fields (blurb, purpose, patterns, etc.) are preserved from
+  // prior atlas_commit writes — they'll be updated by agents organically.
+  const xrefs = await runCrossref([
+    toScanFileInfo(record, runtime.config.sourceRoot),
+  ], {
+    sourceRoot: runtime.config.sourceRoot,
     db: runtime.db,
-    sourceRoot: runtime.config.sourceRoot,
     workspace: runtime.config.workspace,
-    provider: runtime.provider,
-    files: [record],
-  });
-  const blurb = summary.blurbs[filePath] ?? record.blurb;
-
-  const extracted = await runExtract({
-    db: runtime.db,
-    sourceRoot: runtime.config.sourceRoot,
-    workspace: runtime.config.workspace,
-    provider: runtime.provider,
-    files: [{
-      ...record,
-      blurb,
-    }],
-  });
-  const extraction = extracted.files[filePath];
-  if (!extraction) {
-    throw new Error(`Extract phase returned no extraction for ${filePath}`);
-  }
-  const refreshedExports = (extraction.exports ?? extraction.public_api.map((entry) => ({
-    name: entry.name,
-    type: entry.type as ScanFileInfo['exports'][number]['type'],
-  }))) as ScanFileInfo['exports'];
-
-  const embeddingInput = [
-    filePath,
-    record.cluster ?? 'unknown',
-    blurb,
-    extraction.purpose,
-    extraction.patterns.join(', '),
-    extraction.hazards.join(', '),
-    record.exports.map((entry) => `${entry.type}:${entry.name}`).join(', '),
-  ].filter(Boolean).join('\n');
-
-  const embedding = runtime.provider
-    ? await runtime.provider.embedText(embeddingInput)
-    : new Array<number>(1536).fill(0);
-  upsertEmbedding(runtime.db, runtime.config.workspace, filePath, embedding);
-
-  const xrefs = await runCrossref([{
-    ...toScanFileInfo(record, runtime.config.sourceRoot),
-    exports: refreshedExports,
-  }], {
-    sourceRoot: runtime.config.sourceRoot,
   });
   const crossRefs = xrefs[filePath] ?? {
     symbols: {},
@@ -159,19 +109,20 @@ async function refreshFile(runtime: AtlasRuntime, absolutePath: string): Promise
     file_hash: fileHash,
     cluster: record.cluster,
     loc,
-    blurb,
-    purpose: extraction.purpose,
-    public_api: extraction.public_api,
-    exports: refreshedExports,
-    patterns: extraction.patterns,
-    dependencies: extraction.dependencies,
-    data_flows: extraction.data_flows,
-    key_types: extraction.key_types,
-    hazards: extraction.hazards,
-    conventions: extraction.conventions,
+    blurb: record.blurb,
+    purpose: record.purpose,
+    public_api: record.public_api,
+    exports: record.exports as ScanFileInfo['exports'],
+    patterns: record.patterns,
+    dependencies: record.dependencies,
+    data_flows: record.data_flows,
+    key_types: record.key_types,
+    hazards: record.hazards,
+    conventions: record.conventions,
     cross_refs: crossRefs,
+    source_highlights: record.source_highlights ?? [],
     language: record.language,
-    extraction_model: runtime.provider?.kind ?? 'heuristic',
+    extraction_model: 'heuristic',
     last_extracted: new Date().toISOString(),
   });
 

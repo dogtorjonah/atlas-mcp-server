@@ -1,12 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AtlasProviderName, AtlasServerConfig } from './types.js';
+import type { AtlasServerConfig } from './types.js';
 
 export interface AtlasConfigDefaults {
   sourceRoot?: string;
   dbPath?: string;
   workspace?: string;
-  model?: string;
 }
 
 function readArgValue(args: string[], name: string): string | undefined {
@@ -84,27 +83,6 @@ export function writeAtlasEnvFile(filePath: string, values: Record<string, strin
   fs.writeFileSync(filePath, `${content}\n`, 'utf8');
 }
 
-function normalizeProvider(value: string | undefined): AtlasProviderName {
-  if (value === 'anthropic' || value === 'ollama' || value === 'gemini') {
-    return value;
-  }
-  return 'openai';
-}
-
-export function getAtlasDefaultModel(provider: AtlasProviderName): string {
-  switch (provider) {
-    case 'anthropic':
-      return 'claude-haiku-4-5-20251001';
-    case 'gemini':
-      return 'gemini-3-flash';
-    case 'ollama':
-      return process.env.ATLAS_OLLAMA_MODEL ?? process.env.OLLAMA_MODEL ?? 'llama3.2';
-    case 'openai':
-    default:
-      return 'gpt-4.1-nano';
-  }
-}
-
 export function loadAtlasConfig(
   argv = process.argv.slice(2),
   defaults: AtlasConfigDefaults = {},
@@ -114,30 +92,12 @@ export function loadAtlasConfig(
   const atlasEnv = readAtlasEnvFile(path.join(sourceRoot, '.atlas', '.env'));
   const workspace = readArgValue(argv, '--workspace') ?? readEnv('ATLAS_WORKSPACE') ?? defaults.workspace ?? path.basename(sourceRoot).toLowerCase();
   const dbPath = readArgValue(argv, '--db') ?? readEnv('ATLAS_DB_PATH') ?? defaults.dbPath ?? path.join(cwd, '.atlas', 'atlas.sqlite');
-  const provider = normalizeProvider(
-    readArgValue(argv, '--provider')
-      ?? readEnv('ATLAS_PROVIDER')
-      ?? normalizeEnvValue(atlasEnv.ATLAS_PROVIDER),
-  );
-  const model = readArgValue(argv, '--model')
-    ?? readEnv('ATLAS_MODEL')
-    ?? normalizeEnvValue(atlasEnv.ATLAS_MODEL)
-    ?? defaults.model
-    ?? '';
   const concurrency = readInt(readArgValue(argv, '--concurrency') ?? readEnv('ATLAS_CONCURRENCY'), 10);
-  const ollamaBaseUrl = readArgValue(argv, '--ollama-base-url') ?? readEnv('OLLAMA_BASE_URL') ?? normalizeEnvValue(atlasEnv.OLLAMA_BASE_URL);
 
   return {
     workspace,
     sourceRoot,
     dbPath,
-    provider,
-    model,
-    openAiApiKey: readEnv('OPENAI_API_KEY') ?? normalizeEnvValue(atlasEnv.OPENAI_API_KEY),
-    anthropicApiKey: readEnv('ANTHROPIC_API_KEY') ?? normalizeEnvValue(atlasEnv.ANTHROPIC_API_KEY),
-    geminiApiKey: readEnv('GEMINI_API_KEY') ?? normalizeEnvValue(atlasEnv.GEMINI_API_KEY),
-    voyageApiKey: readEnv('VOYAGE_API_KEY') ?? normalizeEnvValue(atlasEnv.VOYAGE_API_KEY),
-    ollamaBaseUrl: ollamaBaseUrl || 'http://127.0.0.1:11434',
     concurrency,
     sqliteVecExtension: readArgValue(argv, '--sqlite-vec-extension') ?? readEnv('ATLAS_SQLITE_VEC_EXTENSION') ?? '',
   };

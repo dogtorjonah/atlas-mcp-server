@@ -1,5 +1,3 @@
-export type AtlasProviderName = 'openai' | 'anthropic' | 'ollama' | 'gemini';
-
 export interface AtlasPublicApiEntry {
   name: string;
   type: string;
@@ -14,6 +12,27 @@ export interface AtlasKeyTypeEntry {
   description?: string;
 }
 
+/**
+ * AI-curated source code snippet. During atlas_commit, the agent selects the
+ * most important/relevant sections of the file — potentially disjointed segments
+ * from a large file. This replaces naive top-N line truncation with intelligent
+ * curation by the agent that has maximum context.
+ *
+ * Snippets are numbered for referencing: changelog entries can say "refer to snippet 3".
+ */
+export interface SourceHighlight {
+  /** 1-indexed snippet number for referencing ("see snippet 3") */
+  id: number;
+  /** Optional description ("main export", "error handling", "config parsing") */
+  label?: string;
+  /** 1-indexed start line in the source file */
+  startLine: number;
+  /** 1-indexed end line in the source file */
+  endLine: number;
+  /** The actual source code text of this segment */
+  content: string;
+}
+
 export interface AtlasFileExtraction {
   purpose: string;
   public_api: AtlasPublicApiEntry[];
@@ -24,25 +43,6 @@ export interface AtlasFileExtraction {
   key_types: AtlasKeyTypeEntry[];
   hazards: string[];
   conventions: string[];
-}
-
-export interface AtlasProvider {
-  kind: AtlasProviderName;
-  generateBlurb(input: {
-    filePath: string;
-    sourceText: string;
-  }): Promise<string>;
-  extractFile(input: {
-    filePath: string;
-    sourceText: string;
-    blurb: string;
-  }): Promise<AtlasFileExtraction>;
-  embedText(text: string): Promise<number[]>;
-  extractCrossRefs(input: {
-    filePath: string;
-    symbolName?: string;
-    sourceText?: string;
-  }): Promise<unknown>;
 }
 
 export interface AtlasCrossRefCallSite {
@@ -85,6 +85,7 @@ export interface AtlasFileRecord {
   hazards: string[];
   conventions: string[];
   cross_refs: AtlasCrossRefs | null;
+  source_highlights: SourceHighlight[];
   language: string;
   extraction_model: string | null;
   last_extracted: string | null;
@@ -110,8 +111,6 @@ export interface AtlasQueueRecord {
 export interface AtlasMetaRecord {
   workspace: string;
   source_root: string;
-  provider: string | null;
-  provider_config: Record<string, unknown>;
   updated_at: string;
 }
 
@@ -119,13 +118,6 @@ export interface AtlasServerConfig {
   workspace: string;
   sourceRoot: string;
   dbPath: string;
-  provider: AtlasProviderName;
-  model: string;
-  openAiApiKey: string;
-  anthropicApiKey: string;
-  geminiApiKey: string;
-  voyageApiKey: string;
-  ollamaBaseUrl: string;
   concurrency: number;
   sqliteVecExtension: string;
   force?: boolean;
@@ -134,6 +126,5 @@ export interface AtlasServerConfig {
 export interface AtlasRuntime {
   config: AtlasServerConfig;
   db: import('./db.js').AtlasDatabase;
-  provider?: AtlasProvider;
   server?: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer;
 }

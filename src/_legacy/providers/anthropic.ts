@@ -1,3 +1,11 @@
+/**
+ * Legacy: Anthropic LLM provider for extraction pipeline.
+ *
+ * Retained for optional use — not required in heuristic-only mode. When
+ * configured, provides blurb generation, deep extraction, and embeddings
+ * (via Voyage AI). In the default heuristic-only pipeline, these capabilities
+ * are replaced by organic enrichment via atlas_commit from working agents.
+ */
 import type {
   AtlasFileExtraction,
   AtlasKeyTypeEntry,

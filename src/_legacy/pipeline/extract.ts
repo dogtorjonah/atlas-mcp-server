@@ -1,3 +1,14 @@
+/**
+ * Legacy: LLM deep extraction phase.
+ *
+ * This module is retained for optional future use with an LLM provider, but is
+ * no longer called during the default heuristic-only pipeline. In heuristic-only
+ * mode, semantic fields (purpose, public_api, patterns, hazards, conventions,
+ * key_types, data_flows, dependencies) start empty and are populated organically
+ * by agents via `atlas_commit` as they work with the codebase. The working agent
+ * has maximum context — it just wrote or reviewed the code — so its extraction
+ * is higher-quality than a cold pass by a cheaper model.
+ */
 import type { AtlasDatabase } from '../db.js';
 import { listAtlasFiles, upsertFileRecord } from '../db.js';
 import type { AtlasFileExtraction, AtlasFileRecord, AtlasProvider } from '../types.js';

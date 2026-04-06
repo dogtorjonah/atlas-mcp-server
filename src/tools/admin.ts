@@ -86,7 +86,6 @@ async function handleInit(
         dbPath: target.dbPath,
       },
       db: freshDb,
-      provider: runtime.provider,
       server: runtime.server,
     };
 

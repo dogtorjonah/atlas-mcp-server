@@ -1,11 +1,20 @@
 /**
- * atlas_commit — unified changelog + inline atlas update tool.
+ * atlas_commit — the primary mechanism for organic Atlas enrichment.
  *
- * Replaces the two-step atlas_log + atlas_flush workflow with a single tool
- * that does both: records what changed (changelog) and updates the
- * atlas_files row directly with the coding AI's own extraction. The coding AI
- * has maximum context — it just wrote the code — so its extraction is
- * higher-quality than a cold re-extraction by a cheaper model.
+ * This is the cornerstone of the heuristic-only Atlas model. Instead of a
+ * cold LLM extraction pass that pre-computes semantic fields for every file,
+ * atlas_commit captures knowledge from the agent that actually worked on the
+ * code — the one with maximum context because it just wrote or reviewed it.
+ *
+ * How organic growth works:
+ * 1. Atlas starts with heuristic-only data (AST symbols, edges, clusters, cross-refs)
+ * 2. Semantic fields (purpose, blurb, patterns, hazards, etc.) begin empty
+ * 3. As agents work with files, they call atlas_commit after review PASS
+ * 4. Each commit merges the agent's knowledge into the Atlas record
+ * 5. The most-touched files accumulate the richest metadata — exactly the right priority
+ *
+ * The result: a living knowledge base that grows organically from real work,
+ * not a pre-computed snapshot that decays the moment it's generated.
  *
  * This tool enforces a single path: every call must include at least one
  * inline atlas_files field (purpose, patterns, hazards, etc.). No background
@@ -19,26 +28,13 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
 import { toolWithDescription } from './helpers.js';
-import type { AtlasChangelogRecord } from '../db.js';
 import {
   getAtlasFile,
   insertAtlasChangelog,
-  upsertChangelogEmbedding,
   upsertFileRecord,
-  upsertEmbedding,
 } from '../db.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function buildChangelogEmbeddingInput(entry: AtlasChangelogRecord): string {
-  return [
-    entry.summary,
-    ...entry.patterns_added,
-    ...entry.patterns_removed,
-    ...entry.hazards_added,
-    ...entry.hazards_removed,
-  ].join(' ').trim();
-}
 
 function computeCurrentFileHash(filePath: string, sourceRoot: string): string | null {
   try {
@@ -50,27 +46,19 @@ function computeCurrentFileHash(filePath: string, sourceRoot: string): string | 
   }
 }
 
-function buildAtlasEmbeddingInput(fields: {
-  purpose?: string;
-  blurb?: string;
-  patterns?: string[];
-  hazards?: string[];
-  conventions?: string[];
-}): string {
-  return [
-    fields.purpose ?? '',
-    fields.blurb ?? '',
-    ...(fields.patterns ?? []),
-    ...(fields.hazards ?? []),
-    ...(fields.conventions ?? []),
-  ].join('\n').trim();
-}
-
 const apiEntrySchema = z.object({
   name: z.string(),
   type: z.string(),
   signature: z.string().optional(),
   description: z.string().optional(),
+});
+
+const sourceHighlightSchema = z.object({
+  id: z.number().int().min(1).describe('1-indexed snippet number for referencing ("see snippet 3")'),
+  label: z.string().optional().describe('Short description ("main export", "error handling", "config parsing")'),
+  startLine: z.number().int().min(1).describe('1-indexed start line in source file'),
+  endLine: z.number().int().min(1).describe('1-indexed end line in source file'),
+  content: z.string().describe('The actual source code text of this segment'),
 });
 
 // ── Tool Registration ────────────────────────────────────────────────────────
@@ -79,11 +67,13 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
   toolWithDescription(server)(
     'atlas_commit',
     [
-      'Strategic post-edit tool for recording why a file changed and updating its Atlas record in the same call.',
-      'Use atlas_commit after a reviewed edit when you want the Atlas to stay aligned with the code without waiting for a cold re-extraction pass.',
-      'What it gives you: a durable changelog entry for the change rationale plus an inline update to the file atlas entry, including purpose, public API, conventions, key types, data flows, hazards, patterns, and dependency metadata. This is the right tool when the coding agent has the freshest understanding of the file and should write that knowledge back immediately.',
-      'Workflow hints: call atlas_commit after review PASS and before releasing file ownership; use it for focused metadata corrections after refactors, API changes, or hazard updates; include the most important atlas fields you actually changed instead of trying to restate the whole file from scratch.',
-      'This matters even more now because Atlas consumers rely on richer pipeline outputs such as AST-verified structure, deterministic flow edges, heuristic cross-reference context, and community clustering. atlas_commit keeps the human and machine rationale attached to those evolving graph facts.',
+      'The primary mechanism for enriching Atlas records with semantic understanding.',
+      'Atlas indexes start with heuristic-only data (AST symbols, structural edges, cross-references, clusters). Semantic fields like purpose, blurb, patterns, hazards, conventions, key_types, data_flows, and public_api begin empty — waiting for YOU to fill them in.',
+      'When you see empty fields in an atlas_query lookup, that is your cue: you have the context to fill them. Call atlas_commit after review PASS and before releasing file ownership.',
+      'What it gives you: a durable changelog entry for the change rationale plus an inline update to the file\'s Atlas record. You are the agent with the freshest understanding — your extraction is higher-quality than any cold pre-computation.',
+      'Workflow hints: call atlas_commit after review PASS and before releasing file ownership; fill in ANY empty semantic fields you noticed, not just the ones related to your edit; include the most important atlas fields you can provide.',
+      'Source highlights: Instead of naive truncation, YOU choose which code sections matter most. Provide `source_highlights` — an array of curated, potentially disjointed snippets from the file. Each has an id (1-indexed), optional label, line range, and content. For a 2000-line file you might select 3 key segments. Changelog entries can reference them ("refer to snippet 5"). The more you curate, the less raw source future lookups need to show.',
+      'The more agents commit knowledge, the richer the Atlas becomes. The most-touched files accumulate the best metadata — exactly the right priority.',
     ].join('\n'),
     {
       // ── Changelog fields (same as atlas_log) ──
@@ -110,6 +100,9 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       patterns: z.array(z.string()).optional(),
       dependencies: z.record(z.unknown()).optional(),
       blurb: z.string().optional(),
+      source_highlights: z.array(sourceHighlightSchema).optional().describe(
+        'AI-curated source snippets: select the most important/relevant disjointed sections of the file. Each snippet has id (1-indexed), optional label, startLine, endLine, and content. Replaces naive truncation with intelligent curation.',
+      ),
     },
     async ({
       file_path,
@@ -134,6 +127,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       patterns,
       dependencies,
       blurb,
+      source_highlights,
     }: {
       file_path: string;
       summary: string;
@@ -156,6 +150,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       patterns?: string[];
       dependencies?: Record<string, unknown>;
       blurb?: string;
+      source_highlights?: Array<{ id: number; label?: string; startLine: number; endLine: number; content: string }>;
     }) => {
       const hasInlineUpdate = purpose !== undefined
         || public_api !== undefined
@@ -165,11 +160,12 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         || hazards !== undefined
         || patterns !== undefined
         || dependencies !== undefined
-        || blurb !== undefined;
+        || blurb !== undefined
+        || source_highlights !== undefined;
 
       if (!hasInlineUpdate) {
         throw new Error(
-          'atlas_commit requires at least one inline atlas field (purpose, public_api, conventions, key_types, data_flows, hazards, patterns, dependencies, or blurb).',
+          'atlas_commit requires at least one inline atlas field (purpose, public_api, conventions, key_types, data_flows, hazards, patterns, dependencies, blurb, or source_highlights).',
         );
       }
 
@@ -191,19 +187,6 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         source: 'atlas_commit',
       });
 
-      // Embed the changelog entry
-      if (runtime.provider) {
-        const changelogText = buildChangelogEmbeddingInput(entry);
-        if (changelogText) {
-          try {
-            const embedding = await runtime.provider.embedText(changelogText);
-            upsertChangelogEmbedding(runtime.db, entry.id, embedding);
-          } catch {
-            // Embedding failures are non-fatal; FTS remains available.
-          }
-        }
-      }
-
       // ── Step 2: Inline atlas_files update (required) ───────────────────
       // Read existing record to merge with — we only overwrite fields the
       // agent explicitly provided, preserving everything else.
@@ -221,6 +204,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       const mergedKeyTypes = key_types ?? existing?.key_types ?? [];
       const mergedDataFlows = data_flows ?? existing?.data_flows ?? [];
       const mergedDependencies = dependencies ?? existing?.dependencies ?? {};
+      const mergedSourceHighlights = source_highlights ?? existing?.source_highlights ?? [];
 
       upsertFileRecord(runtime.db, {
         workspace: runtime.config.workspace,
@@ -239,29 +223,11 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         hazards: mergedHazards,
         conventions: mergedConventions,
         cross_refs: existing?.cross_refs ?? null,
+        source_highlights: mergedSourceHighlights,
         language: existing?.language ?? 'typescript',
         extraction_model: `${author_engine ?? 'agent'}/atlas_commit`,
         last_extracted: new Date().toISOString(),
       });
-
-      // Re-embed the updated atlas entry
-      if (runtime.provider) {
-        const atlasText = buildAtlasEmbeddingInput({
-          purpose: mergedPurpose,
-          blurb: mergedBlurb,
-          patterns: mergedPatterns,
-          hazards: mergedHazards,
-          conventions: mergedConventions,
-        });
-        if (atlasText) {
-          try {
-            const embedding = await runtime.provider.embedText(atlasText);
-            upsertEmbedding(runtime.db, runtime.config.workspace, file_path, embedding);
-          } catch {
-            // Non-fatal — atlas entry still updated, just not re-embedded.
-          }
-        }
-      }
 
       // ── Step 3: Build response ─────────────────────────────────────────
       const parts = [
@@ -295,6 +261,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         data_flows !== undefined && 'data_flows',
         dependencies !== undefined && 'dependencies',
         blurb !== undefined && 'blurb',
+        source_highlights !== undefined && `source_highlights (${source_highlights?.length ?? 0} snippets)`,
       ].filter(Boolean);
       parts.push(`Atlas entry updated inline: ${fields.join(', ')}`);
 

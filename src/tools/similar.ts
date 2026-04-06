@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
 import type { AtlasDatabase } from '../db.js';
-import { getAtlasFile, searchAtlasFiles, searchFts, searchVector } from '../db.js';
+import { getAtlasFile, searchAtlasFiles, searchFts } from '../db.js';
 import { discoverWorkspaces } from './bridge.js';
 import { toolWithDescription } from './helpers.js';
 
@@ -15,7 +15,7 @@ interface RankedResult {
   file_path: string;
   score: number;
   record: AtlasFileRecord;
-  source: 'fts' | 'vector' | 'fallback';
+  source: 'fts' | 'fallback';
 }
 
 function resolveDbContext(runtime: AtlasRuntime, workspace?: string): RuntimeDbContext | null {
@@ -29,7 +29,7 @@ function resolveDbContext(runtime: AtlasRuntime, workspace?: string): RuntimeDbC
   return { db: target.db, workspace: target.workspace };
 }
 
-function buildEmbeddingInput(file: AtlasFileRecord): string {
+function buildSearchQuery(file: AtlasFileRecord): string {
   return [
     file.file_path,
     file.purpose,
@@ -44,39 +44,8 @@ function mapHitsToRanked(hits: Array<{ file: AtlasFileRecord; score: number; sou
     file_path: hit.file.file_path,
     score: hit.score,
     record: hit.file,
-    source: hit.source,
+    source: 'fts' as const,
   }));
-}
-
-function fuseResults(fts: RankedResult[], vector: RankedResult[], k = 60): RankedResult[] {
-  const fused = new Map<string, { score: number; record: AtlasFileRecord; source: RankedResult['source'] }>();
-
-  fts.forEach((result, index) => {
-    const current = fused.get(result.file_path);
-    fused.set(result.file_path, {
-      score: (current?.score ?? 0) + 1 / (k + index + 1),
-      record: current?.record ?? result.record,
-      source: current?.source ?? result.source,
-    });
-  });
-
-  vector.forEach((result, index) => {
-    const current = fused.get(result.file_path);
-    fused.set(result.file_path, {
-      score: (current?.score ?? 0) + 1 / (k + index + 1),
-      record: current?.record ?? result.record,
-      source: current?.source ?? result.source,
-    });
-  });
-
-  return [...fused.entries()]
-    .sort((a, b) => b[1].score - a[1].score)
-    .map(([file_path, value]) => ({
-      file_path,
-      score: value.score,
-      record: value.record,
-      source: value.source,
-    }));
 }
 
 function atlasContent(format: 'json' | 'text' | undefined, payload: Record<string, unknown>, text: string) {
@@ -129,21 +98,12 @@ export async function runSimilarTool(runtime: AtlasRuntime, {
 
   const maxResults = Math.max(1, Math.min(limit ?? 10, 50));
   const minSimilarity = Math.max(0, Math.min(min_score ?? minScore ?? 0.5, 1));
-  const query = buildEmbeddingInput(seedRow) || `${seedRow.file_path}\n${seedRow.purpose || seedRow.blurb || ''}`;
+  const query = buildSearchQuery(seedRow) || `${seedRow.file_path}\n${seedRow.purpose || seedRow.blurb || ''}`;
+  // Primary path: BM25 full-text search via FTS5. No API key required.
   const ftsResults = mapHitsToRanked(searchFts(context.db, ws, query, Math.max(maxResults * 3, 20)));
 
-  let vectorResults: RankedResult[] = [];
-  if (runtime.provider) {
-    try {
-      const embedding = await runtime.provider.embedText(query);
-      vectorResults = mapHitsToRanked(searchVector(context.db, ws, embedding, Math.max(maxResults * 3, 20)));
-    } catch {
-      // Non-fatal: FTS and fallback search still work.
-    }
-  }
-
-  let results = (ftsResults.length > 0 || vectorResults.length > 0)
-    ? fuseResults(ftsResults, vectorResults)
+  let results = ftsResults.length > 0
+    ? ftsResults
     : searchAtlasFiles(context.db, ws, query, Math.max(maxResults * 3, 20)).map((record, index) => ({
       file_path: record.file_path,
       score: 1 / (index + 1),
@@ -190,7 +150,7 @@ export async function runSimilarTool(runtime: AtlasRuntime, {
 export function registerSimilarTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_similar',
-    'Find files similar to a given file by semantic similarity. Compares file purpose, patterns, hazards, and descriptions using vector embeddings, then falls back to atlas text search if embeddings are unavailable. Best for: finding related modules, potential duplicates, parallel implementations, and migration candidates. Supports cross-workspace lookup.',
+    'Find files similar to a given file. Uses BM25 full-text search over file purpose, patterns, hazards, and descriptions. The index grows organically as agents fill in metadata via atlas_commit. Best for: finding related modules, potential duplicates, parallel implementations, and migration candidates. Supports cross-workspace lookup. No API key required.',
     {
       file_path: z.string().min(1).optional(),
       filePath: z.string().min(1).optional(),

@@ -1,3 +1,11 @@
+/**
+ * Legacy: LLM embedding phase.
+ *
+ * This module is retained for optional future use when an LLM provider is configured.
+ * In heuristic-only mode (no API key), the pipeline skips embedding entirely —
+ * search uses BM25 (FTS5) which requires no vector embeddings. Embeddings can be
+ * populated later via atlas_commit or by re-running init with a provider configured.
+ */
 import type { AtlasDatabase } from '../db.js';
 import { listAtlasFiles, upsertEmbedding } from '../db.js';
 import type { AtlasFileRecord, AtlasProvider } from '../types.js';

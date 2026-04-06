@@ -1,29 +1,14 @@
 import path from 'node:path';
-import { createInterface } from 'node:readline/promises';
 import { writeFileSync, unlinkSync } from 'node:fs';
-import { getAtlasFile, getFilePhase, listAtlasFiles, openAtlasDatabase, rebuildFts, resetAtlasDatabase, upsertAtlasMeta, upsertEmbedding, upsertFileRecord } from '../db.js';
-import type { AtlasCrossRefs, AtlasFileRecord, AtlasProvider, AtlasServerConfig } from '../types.js';
-import { createOpenAIProvider } from '../providers/openai.js';
-import { createAnthropicProvider } from '../providers/anthropic.js';
-import { createOllamaProvider } from '../providers/ollama.js';
-import { createGeminiProvider } from '../providers/gemini.js';
-import { buildEmbeddingInput, toFileUpsertInput } from './shared.js';
+import { getAtlasFile, getFilePhase, listAtlasFiles, openAtlasDatabase, rebuildFts, resetAtlasDatabase, upsertAtlasMeta, upsertFileRecord } from '../db.js';
+import type { AtlasCrossRefs, AtlasFileRecord, AtlasServerConfig } from '../types.js';
+import { toFileUpsertInput } from './shared.js';
 import { runScan, type ScanFileInfo } from './scan.js';
-import { runSummarize } from './summarize.js';
-import { runExtract } from './extract.js';
 import { persistCrossRefs, runCrossref } from './crossref.js';
 import { runStructure } from './structure.js';
 import { runFlow } from './flow.js';
 import { runCommunityDetection } from './community.js';
 import { createPhaseProgressReporter } from './progress.js';
-
-function createPipelineProvider(config: AtlasServerConfig): AtlasProvider | undefined {
-  if (config.provider === 'anthropic' && config.anthropicApiKey) return createAnthropicProvider(config);
-  if (config.provider === 'ollama') return createOllamaProvider(config);
-  if (config.provider === 'gemini') return createGeminiProvider(config);
-  if (config.openAiApiKey) return createOpenAIProvider(config);
-  return undefined;
-}
 
 export interface AtlasPipelineConfig extends AtlasServerConfig {
   migrationDir: string;
@@ -42,31 +27,11 @@ export interface FullPipelineResult {
   phase?: 'full' | 'crossref';
 }
 
-const CHAT_INPUT_TOKENS_PER_CALL = 2000;
-const CHAT_OUTPUT_TOKENS_PER_CALL = 500;
-const EMBED_INPUT_TOKENS_PER_CALL = 2000;
-
-interface CostProfile {
-  providerLabel: string;
-  modelLabel: string;
-  inputUsdPerMillion: number;
-  outputUsdPerMillion: number;
-  embedInputUsdPerMillion: number;
-}
-
-interface CostEstimate {
-  chatCalls: number;
-  embeddingCalls: number;
-  totalCalls: number;
-  estimatedUsd: number;
-}
-
 interface BatchPipelineContext {
   db: ReturnType<typeof openAtlasDatabase>;
   workspace: string;
   rootDir: string;
   concurrency: number;
-  provider?: AtlasProvider;
   atlasRecords: Map<string, AtlasFileRecord>;
   failedFiles: Set<string>;
   cancelled: boolean;
@@ -74,129 +39,8 @@ interface BatchPipelineContext {
   force: boolean;
 }
 
-type BatchPhaseKey = 'structure' | 'flow' | 'summarize' | 'extract' | 'embed' | 'crossref' | 'cluster';
-
-const RESCUE_TRUNCATION_LIMITS = [6000, 3000] as const;
-
-function pseudoEmbedding(text: string): number[] {
-  const size = 1536;
-  const vector = new Array<number>(size);
-  let seed = 2166136261;
-  for (let i = 0; i < text.length; i += 1) {
-    seed ^= text.charCodeAt(i);
-    seed = Math.imul(seed, 16777619);
-  }
-
-  let value = seed >>> 0;
-  for (let i = 0; i < size; i += 1) {
-    value = Math.imul(value ^ (value >>> 13), 16777619) >>> 0;
-    vector[i] = ((value % 2000) / 1000) - 1;
-  }
-  return vector;
-}
-
-export function formatUsd(value: number): string {
-  return `$${value.toFixed(2)}`;
-}
-
-export function resolveCostProfile(config: AtlasServerConfig): CostProfile {
-  if (config.provider === 'anthropic' && config.anthropicApiKey) {
-    return {
-      providerLabel: 'anthropic',
-      modelLabel: 'claude-haiku-4-5-20251001',
-      inputUsdPerMillion: 1.00,
-      outputUsdPerMillion: 5.00,
-      embedInputUsdPerMillion: 1.00,
-    };
-  }
-
-  if (config.provider === 'ollama') {
-    return {
-      providerLabel: 'ollama',
-      modelLabel: process.env.ATLAS_OLLAMA_MODEL || process.env.OLLAMA_MODEL || 'llama3.2',
-      inputUsdPerMillion: 0,
-      outputUsdPerMillion: 0,
-      embedInputUsdPerMillion: 0,
-    };
-  }
-
-  if (config.provider === 'gemini' && config.geminiApiKey) {
-    return {
-      providerLabel: 'gemini',
-      modelLabel: 'gemini-3.1-flash',
-      inputUsdPerMillion: 0.10,
-      outputUsdPerMillion: 0.40,
-      embedInputUsdPerMillion: 0.10,
-    };
-  }
-
-  if (config.openAiApiKey) {
-    return {
-      providerLabel: 'openai',
-      modelLabel: 'gpt-5.4-mini',
-      inputUsdPerMillion: 0.75,
-      outputUsdPerMillion: 4.50,
-      embedInputUsdPerMillion: 0.02,
-    };
-  }
-
-  return {
-    providerLabel: 'scaffold',
-    modelLabel: 'scaffold',
-    inputUsdPerMillion: 0,
-    outputUsdPerMillion: 0,
-    embedInputUsdPerMillion: 0,
-  };
-}
-
-export function estimateInitCost(fileCount: number, profile: CostProfile): CostEstimate {
-  const chatCalls = fileCount * 3;
-  const embeddingCalls = fileCount;
-  const chatInputTokens = chatCalls * CHAT_INPUT_TOKENS_PER_CALL;
-  const chatOutputTokens = chatCalls * CHAT_OUTPUT_TOKENS_PER_CALL;
-  const embedInputTokens = embeddingCalls * EMBED_INPUT_TOKENS_PER_CALL;
-  const estimatedUsd =
-    (chatInputTokens / 1_000_000) * profile.inputUsdPerMillion +
-    (chatOutputTokens / 1_000_000) * profile.outputUsdPerMillion +
-    (embedInputTokens / 1_000_000) * profile.embedInputUsdPerMillion;
-
-  return {
-    chatCalls,
-    embeddingCalls,
-    totalCalls: chatCalls + embeddingCalls,
-    estimatedUsd,
-  };
-}
-
-async function promptInitConfirmation(lines: string[], skipConfirmation: boolean): Promise<void> {
-  for (const line of lines) {
-    console.log(line);
-  }
-
-  if (skipConfirmation) {
-    console.log('[atlas-init] --yes supplied; continuing without confirmation');
-    return;
-  }
-
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.log('[atlas-init] non-interactive stdin detected; continuing with default yes');
-    return;
-  }
-
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    const answer = (await rl.question('Proceed? [Y/n] ')).trim().toLowerCase();
-    if (answer === 'n' || answer === 'no') {
-      throw new Error('Atlas init cancelled by user');
-    }
-  } finally {
-    rl.close();
-  }
-}
+// Heuristic-only phases — semantic fields populated organically via atlas_commit
+type BatchPhaseKey = 'structure' | 'flow' | 'crossref' | 'cluster';
 
 async function runBatch<T>(
   items: T[],
@@ -221,38 +65,6 @@ function refreshAtlasRecord(context: BatchPipelineContext, filePath: string): At
   }
   context.atlasRecords.set(filePath, refreshed);
   return refreshed;
-}
-
-/** Errors where truncating the source text and retrying may help. */
-function isRetryableWithTruncation(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    // Malformed / truncated JSON from the model
-    message.includes('Unexpected end of JSON input') ||
-    message.includes('Unexpected token') ||
-    message.includes('JSON') ||
-    // Context window / token limit overflow
-    message.includes('context_length_exceeded') ||
-    message.includes('max_tokens') ||
-    message.includes('maximum context length') ||
-    message.includes('too many tokens') ||
-    message.includes('string_above_max_length')
-  );
-}
-
-/** Transient errors worth retrying at the same size (rate limits, network). */
-function isTransientError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const statusMatch = message.match(/\b(429|500|502|503|504)\b/);
-  return (
-    statusMatch !== null ||
-    message.includes('rate_limit') ||
-    message.includes('Rate limit') ||
-    message.includes('ECONNRESET') ||
-    message.includes('ETIMEDOUT') ||
-    message.includes('fetch failed') ||
-    message.includes('network')
-  );
 }
 
 function formatDuration(ms: number): string {
@@ -323,52 +135,6 @@ async function runPhaseBatch(
   return { failed: failed.size, succeeded };
 }
 
-const TRANSIENT_MAX_RETRIES = 2;
-const TRANSIENT_BASE_DELAY_MS = 3000;
-
-async function runRetriableProviderTask(
-  filePath: string,
-  task: (sourceTextLimit?: number) => Promise<void>,
-): Promise<void> {
-  let lastError: unknown;
-  const sourceTextLimits = [undefined, ...RESCUE_TRUNCATION_LIMITS] as const;
-
-  for (let index = 0; index < sourceTextLimits.length; index += 1) {
-    const sourceTextLimit = sourceTextLimits[index];
-
-    // Each truncation level gets its own transient-retry budget
-    for (let transientAttempt = 0; transientAttempt <= TRANSIENT_MAX_RETRIES; transientAttempt += 1) {
-      try {
-        await task(sourceTextLimit);
-        return;
-      } catch (error) {
-        lastError = error;
-        const msg = error instanceof Error ? error.message : String(error);
-
-        // Transient error (rate limit, network) — retry same size after backoff
-        if (transientAttempt < TRANSIENT_MAX_RETRIES && isTransientError(error)) {
-          const delay = TRANSIENT_BASE_DELAY_MS * (transientAttempt + 1);
-          console.log(`[atlas-init] ${filePath}: transient error (${msg.slice(0, 80)}), retrying in ${delay}ms`);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          continue;
-        }
-
-        // Truncation-retryable error — try with smaller source text
-        const nextSourceTextLimit = sourceTextLimits[index + 1];
-        if (isRetryableWithTruncation(error) && nextSourceTextLimit !== undefined) {
-          console.log(`[atlas-init] ${filePath}: ${msg.slice(0, 80)} — retrying with source text limit ${nextSourceTextLimit}`);
-          break; // break inner loop, continue outer with next truncation level
-        }
-
-        // Non-retryable — give up
-        throw error;
-      }
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
-}
-
 function buildDefaultCrossRefs(file: ScanFileInfo): AtlasCrossRefs {
   return {
     symbols: {},
@@ -381,9 +147,11 @@ function buildDefaultCrossRefs(file: ScanFileInfo): AtlasCrossRefs {
 
 /**
  * Phase ordering for resume comparison.
- * 'none' < 'structure' < 'summarize' < 'extract' < 'embed' < 'crossref'
+ * 'none' < 'structure' < 'crossref'
+ * Legacy phases (summarize, extract, embed) removed — semantic fields now populated
+ * organically via atlas_commit as agents work with the codebase.
  */
-const PHASE_ORDER = ['none', 'structure', 'summarize', 'extract', 'embed', 'crossref'] as const;
+const PHASE_ORDER = ['none', 'structure', 'crossref'] as const;
 type PhaseLevel = (typeof PHASE_ORDER)[number];
 interface CrossrefOnlySelection {
   requestedCount: number;
@@ -414,7 +182,7 @@ function selectCrossrefTargets(
   const selected = requestedSet
     ? files.filter((file) => requestedSet.has(file.filePath))
     : files;
-  const eligible = selected.filter((file) => phaseAtLeast(filePhases.get(file.filePath) ?? 'none', 'extract'));
+  const eligible = selected.filter((file) => phaseAtLeast(filePhases.get(file.filePath) ?? 'none', 'structure'));
 
   return {
     requestedCount: requestedSet?.size ?? files.length,
@@ -453,9 +221,6 @@ async function runCrossrefOnlyBatch(
         startedAt,
         mode: 'crossref',
         phases: {
-          'summarize': { total: 0, completed: 0, failed: 0, done: true },
-          'extract': { total: 0, completed: 0, failed: 0, done: true },
-          embed: { total: 0, completed: 0, failed: 0, done: true },
           'crossref': counter,
         },
       }), 'utf8');
@@ -528,9 +293,8 @@ async function runSequentialPipelineBatch(
   interface PhaseCounter { total: number; completed: number; failed: number; done: boolean }
   const cStruct: PhaseCounter = { total: 0, completed: 0, failed: 0, done: false };
   const cFlow: PhaseCounter = { total: 0, completed: 0, failed: 0, done: false };
-  const c05: PhaseCounter = { total: 0, completed: 0, failed: 0, done: false };
-  const c1: PhaseCounter  = { total: 0, completed: 0, failed: 0, done: false };
-  const cem: PhaseCounter = { total: 0, completed: 0, failed: 0, done: false };
+  // Legacy LLM phase counters (c05/summarize, c1/extract, cem/embed) removed —
+  // semantic fields now populated organically via atlas_commit
   const c2: PhaseCounter  = { total: 0, completed: 0, failed: 0, done: false };
   const c3: PhaseCounter  = { total: 0, completed: 0, failed: 0, done: false };
 
@@ -538,7 +302,7 @@ async function runSequentialPipelineBatch(
     try {
       writeFileSync(statusPath, JSON.stringify({
         currentPhase, startedAt,
-        phases: { 'structure': cStruct, 'flow': cFlow, 'summarize': c05, 'extract': c1, 'embed': cem, 'crossref': c2, 'cluster': c3 },
+        phases: { 'structure': cStruct, 'flow': cFlow, 'crossref': c2, 'cluster': c3 },
       }), 'utf8');
     } catch { /* ignore write failures */ }
   }
@@ -622,97 +386,11 @@ async function runSequentialPipelineBatch(
   }
   cFlow.done = true;
 
-  // ---- Summarize (LLM blurbs) ----
-  const summarizeFiles = files.filter((file) => {
-    if (context.failedFiles.has(file.filePath)) return false;
-    // Skip if this file already completed summarize or later
-    return !phaseAtLeast(filePhases.get(file.filePath) ?? 'none', 'summarize');
-  });
-  if (summarizeFiles.length < files.length - context.failedFiles.size) {
-    const skipped = files.length - context.failedFiles.size - summarizeFiles.length;
-    console.log(`[atlas-init] ${batchName}/blurbs: skipping ${skipped} already-complete files`);
-  }
-  c05.total = summarizeFiles.length;
-  writeStatus('summarize');
-  await runPhaseBatch('summarize', 'Blurbs', summarizeFiles, context, async (file) => {
-    const atlasFile = getAtlasRecord(context, file.filePath);
-    if (!atlasFile) {
-      throw new Error(`Missing atlas row for ${file.filePath}`);
-    }
-
-    await runRetriableProviderTask(file.filePath, async (sourceTextLimit) => {
-      await runSummarize({
-        db: context.db,
-        sourceRoot: context.rootDir,
-        workspace: context.workspace,
-        provider: context.provider,
-        files: [atlasFile],
-        sourceTextLimit,
-      });
-    });
-
-    refreshAtlasRecord(context, file.filePath);
-  }, makeOnProgress(c05, 'summarize'));
-  c05.done = true;
-
-  const extractFiles = files.filter((file) => {
-    if (context.failedFiles.has(file.filePath)) return false;
-    return !phaseAtLeast(filePhases.get(file.filePath) ?? 'none', 'extract');
-  });
-  if (extractFiles.length < files.length - context.failedFiles.size) {
-    const skipped = files.length - context.failedFiles.size - extractFiles.length;
-    console.log(`[atlas-init] ${batchName}/extraction: skipping ${skipped} already-complete files`);
-  }
-  c1.total = extractFiles.length;
-  writeStatus('extract');
-  await runPhaseBatch('extract', 'Extraction', extractFiles, context, async (file) => {
-    const atlasFile = getAtlasRecord(context, file.filePath);
-    if (!atlasFile) {
-      throw new Error(`Missing atlas row for ${file.filePath}`);
-    }
-
-    await runRetriableProviderTask(file.filePath, async (sourceTextLimit) => {
-      await runExtract({
-        db: context.db,
-        sourceRoot: context.rootDir,
-        workspace: context.workspace,
-        provider: context.provider,
-        files: [atlasFile],
-        sourceTextLimit,
-      });
-    });
-
-    refreshAtlasRecord(context, file.filePath);
-  }, makeOnProgress(c1, 'extract'));
-  c1.done = true;
-
-  const embedFiles = files.filter((file) => {
-    if (context.failedFiles.has(file.filePath)) return false;
-    // Note: embed doesn't have a clean "done" check in the DB, so we only skip
-    // files that reached crossref (which implies embed was done)
-    return !phaseAtLeast(filePhases.get(file.filePath) ?? 'none', 'crossref');
-  });
-  if (embedFiles.length < files.length - context.failedFiles.size) {
-    const skipped = files.length - context.failedFiles.size - embedFiles.length;
-    console.log(`[atlas-init] ${batchName}/embed: skipping ${skipped} already-complete files`);
-  }
-  cem.total = embedFiles.length;
-  writeStatus('embed');
-  await runPhaseBatch('embed', 'Vectorize', embedFiles, context, async (file) => {
-    const atlasFile = getAtlasRecord(context, file.filePath);
-    if (!atlasFile) {
-      throw new Error(`Missing atlas row for ${file.filePath}`);
-    }
-
-    const embeddingInput = buildEmbeddingInput(atlasFile);
-    const embedding = context.provider
-      ? await context.provider.embedText(embeddingInput)
-      : pseudoEmbedding(embeddingInput);
-
-    upsertEmbedding(context.db, context.workspace, file.filePath, embedding);
-    refreshAtlasRecord(context, file.filePath);
-  }, makeOnProgress(cem, 'embed'));
-  cem.done = true;
+  // ---- Legacy LLM phases (summarize, extract, embed) removed ----
+  // Semantic fields (purpose, blurb, patterns, hazards, conventions, public_api, key_types)
+  // start empty and are populated organically by agents via atlas_commit as they
+  // work with the codebase. The agent that just edited or reviewed a file has the
+  // freshest understanding — its contribution is higher-quality than a cold extraction.
 
   const crossrefFiles = files.filter((file) => {
     if (context.failedFiles.has(file.filePath)) return false;
@@ -739,7 +417,7 @@ async function runSequentialPipelineBatch(
 
     upsertFileRecord(context.db, toFileUpsertInput(atlasFile, {
       cross_refs: crossRefs,
-      extraction_model: context.provider?.kind ?? atlasFile.extraction_model ?? 'scaffold',
+      extraction_model: 'heuristic',
       last_extracted: new Date().toISOString(),
     }));
     refreshAtlasRecord(context, file.filePath);
@@ -773,14 +451,13 @@ export interface RuntimeReindexOptions {
   db: ReturnType<typeof openAtlasDatabase>;
   workspace: string;
   rootDir: string;
-  provider?: AtlasProvider;
   concurrency: number;
   phase?: 'full' | 'crossref';
   files?: string[];
 }
 
 export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise<FullPipelineResult> {
-  const { db, workspace, rootDir, provider, concurrency } = options;
+  const { db, workspace, rootDir, concurrency } = options;
   const phase = options.phase ?? 'full';
 
   const scan = await runScan(rootDir, workspace, db);
@@ -794,7 +471,6 @@ export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise
     workspace,
     rootDir,
     concurrency,
-    provider,
     atlasRecords,
     failedFiles: new Set<string>(),
     cancelled: false,
@@ -873,22 +549,9 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
     upsertAtlasMeta(db, {
       workspace,
       source_root: rootDir,
-      provider: config.provider,
-      provider_config: {
-        openAiApiKey: Boolean(config.openAiApiKey),
-        anthropicApiKey: Boolean(config.anthropicApiKey),
-        geminiApiKey: Boolean(config.geminiApiKey),
-        voyageApiKey: Boolean(config.voyageApiKey),
-        ollamaBaseUrl: config.ollamaBaseUrl,
-      },
     });
 
-    const provider = createPipelineProvider(config);
-    if (provider) {
-      console.log(`[atlas-init] provider: ${provider.kind}`);
-    } else {
-      console.log('[atlas-init] WARNING: no AI provider configured — using scaffold placeholders');
-    }
+    console.log('[atlas-init] heuristic-only mode — semantic fields will be populated by agents via atlas_commit');
 
     const scan = await runScan(rootDir, workspace, db, { force: config.force });
     console.log(`[atlas-init] scan: ${scan.files.length} files, ${scan.importEdges.length} edges`);
@@ -903,7 +566,6 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
         workspace,
         rootDir,
         concurrency: config.concurrency,
-        provider,
         atlasRecords,
         failedFiles: new Set<string>(),
         cancelled,
@@ -928,17 +590,13 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
       };
     }
 
-    const costProfile = resolveCostProfile(config);
-    const costEstimate = estimateInitCost(scan.files.length, costProfile);
-    await promptInitConfirmation([
-      '',
-      `🧠 Atlas — Indexing ${workspace}`,
-      '',
-      `Found ${scan.files.length} TypeScript files (Scan complete)`,
-      `Provider: ${costProfile.providerLabel} (${costProfile.modelLabel})`,
-      `Estimated API calls: ${costEstimate.chatCalls} chat + ${costEstimate.embeddingCalls} embeddings`,
-      `Estimated cost: ~${formatUsd(costEstimate.estimatedUsd)}`,
-    ], config.skipCostConfirmation ?? false);
+    // Heuristic-only mode — no API costs, no confirmation needed
+    console.log('');
+    console.log(`🧠 Atlas — Indexing ${workspace} (heuristic-only)`);
+    console.log('');
+    console.log(`Found ${scan.files.length} files (Scan complete)`);
+    console.log('Heuristic-only indexing — no API costs');
+    console.log('Semantic fields (purpose, patterns, hazards) will be populated by agents via atlas_commit');
 
     const failedFiles = new Set<string>();
     const atlasRecords = new Map(
@@ -950,7 +608,6 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
       workspace,
       rootDir,
       concurrency: config.concurrency,
-      provider,
       atlasRecords,
       failedFiles: new Set<string>(),
       cancelled,
@@ -965,63 +622,9 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
       failedFiles.add(filePath);
     }
 
-    if (config.force) {
-      console.log('[atlas-init] validation/rescue: skipped because --force was supplied');
-    } else {
-      console.log('[atlas-init] validation: checking for incomplete atlas rows');
-      const incompleteRows = db.prepare(
-        `SELECT *
-         FROM atlas_files
-         WHERE workspace = ?
-           AND (
-             coalesce(blurb, '') = ''
-             OR coalesce(purpose, '') = ''
-             OR extraction_model = 'scaffold'
-           )
-         ORDER BY file_path ASC`,
-      ).all(workspace) as Record<string, unknown>[];
-
-      const incompleteFiles = incompleteRows
-        .map((row) => getAtlasFile(db, workspace, String(row.file_path ?? '')))
-        .filter((record): record is AtlasFileRecord => record !== null)
-        .map((record) => ({
-          filePath: record.file_path,
-          absolutePath: path.join(rootDir, record.file_path),
-          directory: path.dirname(record.file_path).replaceAll(path.sep, '/'),
-          cluster: record.cluster ?? 'unknown',
-          loc: record.loc,
-          fileHash: record.file_hash ?? '',
-          imports: [] as string[],
-          exports: record.exports as ScanFileInfo['exports'],
-        } satisfies ScanFileInfo));
-
-      if (incompleteFiles.length > 0) {
-        console.log(`[atlas-init] rescue pass: ${incompleteFiles.length} incomplete files, re-processing...`);
-        const rescueContext: BatchPipelineContext = {
-          db,
-          workspace,
-          rootDir,
-          concurrency: config.concurrency,
-          provider,
-          atlasRecords,
-          failedFiles: new Set<string>(),
-          cancelled,
-          force: false, // rescue pass never forces — it's already targeting incomplete files
-        };
-        activeContext = rescueContext;
-        const rescueResult = await runSequentialPipelineBatch('rescue', incompleteFiles, rescueContext);
-        console.log(`[atlas-init] rescue pass complete: ${rescueResult.succeeded} succeeded, ${rescueResult.failed} failed`);
-        for (const file of incompleteFiles) {
-          if (rescueContext.failedFiles.has(file.filePath)) {
-            failedFiles.add(file.filePath);
-          } else {
-            failedFiles.delete(file.filePath);
-          }
-        }
-      } else {
-        console.log('[atlas-init] rescue pass: no incomplete files found');
-      }
-    }
+    // No rescue pass in heuristic-only mode — empty semantic fields (blurb,
+    // purpose, patterns, etc.) are expected. They get populated organically via
+    // atlas_commit as agents work with the codebase.
 
     const finalFailedCount = failedFiles.size;
     console.log(`[atlas-init] final summary: ${scan.files.length - finalFailedCount} succeeded, ${finalFailedCount} failed`);

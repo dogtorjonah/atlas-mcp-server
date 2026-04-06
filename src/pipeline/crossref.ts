@@ -189,8 +189,6 @@ export interface CrossrefResult {
 
 export interface CrossrefOptions {
   sourceRoot: string;
-  // Compatibility only while orchestration lanes remove provider coupling.
-  provider?: unknown;
   contextLines?: number;
   maxGrepHits?: number;
   db?: AtlasDatabase;

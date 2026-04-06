@@ -1,13 +1,8 @@
 node_modules/
 dist/
 
-# Atlas — commit the database, ignore API keys and runtime files
-.atlas/.env
-.atlas/tmp/
-.atlas/*.sqlite-shm
-.atlas/*.sqlite-wal
-.atlas/*.bak.*
-*.sqlite-journal
+# Atlas — runtime artifacts, not source
+.atlas/
 
 .env
 .env.local

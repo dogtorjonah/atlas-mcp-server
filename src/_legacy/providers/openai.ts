@@ -1,3 +1,11 @@
+/**
+ * Legacy: OpenAI LLM provider for extraction pipeline.
+ *
+ * Retained for optional use — not required in heuristic-only mode. When
+ * configured, provides blurb generation, deep extraction, and embeddings.
+ * In the default heuristic-only pipeline, these capabilities are replaced by
+ * organic enrichment via atlas_commit from working agents.
+ */
 import type {
   AtlasFileExtraction,
   AtlasKeyTypeEntry,
@@ -6,8 +14,9 @@ import type {
   AtlasServerConfig,
 } from '../types.js';
 
-const OLLAMA_CHAT_MODEL = process.env.ATLAS_OLLAMA_MODEL || process.env.OLLAMA_MODEL || 'llama3.2';
-const OLLAMA_EMBED_MODEL = process.env.ATLAS_OLLAMA_EMBED_MODEL || process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
+const OPENAI_CHAT_MODEL = 'gpt-5.4-mini';
+const OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
+const OPENAI_API_BASE = 'https://api.openai.com/v1';
 
 function notConfigured(message: string): never {
   throw new Error(message);
@@ -110,41 +119,56 @@ function normalizeExtraction(value: unknown): AtlasFileExtraction {
   };
 }
 
-async function postJson<T>(baseUrl: string, path: string, body: Record<string, unknown>): Promise<T> {
-  const resp = await fetch(`${baseUrl}${path}`, {
+async function postJson<T>(apiKey: string, path: string, body: Record<string, unknown>): Promise<T> {
+  const resp = await fetch(`${OPENAI_API_BASE}${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
   });
 
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`Ollama ${resp.status}: ${text.slice(0, 400)}`);
+    throw new Error(`OpenAI ${resp.status}: ${text.slice(0, 400)}`);
   }
 
   return resp.json() as Promise<T>;
 }
 
-function readText(payload: { message?: { content?: string }; response?: string }): string {
-  return (payload.message?.content ?? payload.response ?? '').trim();
+function extractAssistantText(payload: { choices?: Array<{ message?: { content?: unknown } }> }): string {
+  const content = payload.choices?.[0]?.message?.content;
+  if (typeof content === 'string') {
+    return content.trim();
+  }
+  if (Array.isArray(content)) {
+    return content.flatMap((part) => {
+      if (!part || typeof part !== 'object') return [];
+      const record = part as Record<string, unknown>;
+      return typeof record.text === 'string' ? [record.text] : [];
+    }).join('').trim();
+  }
+  return '';
 }
 
-export function createOllamaProvider(config: AtlasServerConfig): AtlasProvider {
-  const baseUrl = config.ollamaBaseUrl.replace(/\/$/, '');
-  const model = config.model?.trim() || OLLAMA_CHAT_MODEL;
+export function createOpenAIProvider(config: AtlasServerConfig): AtlasProvider {
+  const apiKey = config.openAiApiKey;
+  const model = config.model?.trim() || OPENAI_CHAT_MODEL;
 
   return {
-    kind: 'ollama',
+    kind: 'openai',
     async generateBlurb({ filePath, sourceText }): Promise<string> {
+      if (!apiKey) {
+        notConfigured('OPENAI_API_KEY is required for the OpenAI atlas provider');
+      }
+
       const payload = await postJson<{
-        message?: { content?: string };
-        response?: string;
-      }>(baseUrl, '/api/chat', {
+        choices?: Array<{ message?: { content?: unknown } }>;
+      }>(apiKey, '/chat/completions', {
         model,
-        stream: false,
-        format: 'json',
+        temperature: 0.1,
+        max_completion_tokens: 256,
         messages: [
           {
             role: 'system',
@@ -157,24 +181,28 @@ export function createOllamaProvider(config: AtlasServerConfig): AtlasProvider {
         ],
       });
 
-      const text = readText(payload);
+      const text = extractAssistantText(payload);
       if (!text) {
-        throw new Error(`Ollama returned no blurb text for ${filePath}`);
+        throw new Error(`OpenAI returned no blurb text for ${filePath}`);
       }
-      return stripCodeFences(text);
+      return text;
     },
     async extractFile({ filePath, sourceText, blurb }): Promise<AtlasFileExtraction> {
+      if (!apiKey) {
+        notConfigured('OPENAI_API_KEY is required for the OpenAI atlas provider');
+      }
+
       const payload = await postJson<{
-        message?: { content?: string };
-        response?: string;
-      }>(baseUrl, '/api/chat', {
+        choices?: Array<{ message?: { content?: unknown } }>;
+      }>(apiKey, '/chat/completions', {
         model,
-        stream: false,
-        format: 'json',
+        temperature: 0,
+        max_completion_tokens: 8192,
+        response_format: { type: 'json_object' },
         messages: [
           {
             role: 'system',
-            content: 'You are a senior TypeScript architect performing deep code analysis. Output only JSON.',
+            content: 'You are a senior TypeScript architect performing deep code analysis. Output ONLY valid JSON.',
           },
           {
             role: 'user',
@@ -183,34 +211,45 @@ export function createOllamaProvider(config: AtlasServerConfig): AtlasProvider {
         ],
       });
 
-      const text = stripCodeFences(readText(payload));
+      const text = stripCodeFences(extractAssistantText(payload));
       return normalizeExtraction(JSON.parse(text));
     },
     async embedText(text: string): Promise<number[]> {
-      const payload = await postJson<{ embedding?: number[] }>(baseUrl, '/api/embeddings', {
-        model: OLLAMA_EMBED_MODEL,
-        prompt: text.slice(0, 8000),
+      if (!apiKey) {
+        notConfigured('OPENAI_API_KEY is required for the OpenAI atlas provider');
+      }
+
+      const payload = await postJson<{
+        data?: Array<{ embedding?: number[] }>;
+      }>(apiKey, '/embeddings', {
+        model: OPENAI_EMBEDDING_MODEL,
+        input: text.slice(0, 8000),
       });
 
-      if (Array.isArray(payload.embedding) && payload.embedding.length > 0) {
-        return payload.embedding;
+      const embedding = payload.data?.[0]?.embedding;
+      if (!Array.isArray(embedding) || embedding.length === 0) {
+        throw new Error('OpenAI returned no embedding vector');
       }
-      throw new Error('Ollama returned no embedding vector');
+      return embedding;
     },
     async extractCrossRefs({ sourceText }): Promise<unknown> {
+      if (!apiKey) {
+        notConfigured('OPENAI_API_KEY is required for the OpenAI atlas provider');
+      }
+
       if (!sourceText) return null;
 
       const payload = await postJson<{
-        message?: { content?: string };
-        response?: string;
-      }>(baseUrl, '/api/chat', {
+        choices?: Array<{ message?: { content?: unknown } }>;
+      }>(apiKey, '/chat/completions', {
         model,
-        stream: false,
-        format: 'json',
+        temperature: 0,
+        max_completion_tokens: 4096,
+        response_format: { type: 'json_object' },
         messages: [
           {
             role: 'system',
-            content: 'You are a senior TypeScript architect analyzing cross-file symbol usage. Output ONLY valid JSON: one key per symbol name, each with { "type": string, "call_sites": [{ "file": string, "usage_type": string, "count": number, "context": string }], "total_usages": number, "blast_radius": "local"|"narrow"|"moderate"|"broad" }',
+            content: 'You are a senior TypeScript architect analyzing cross-file symbol usage. You will receive a file\'s exported symbols with tiered caller context (same-dir callers shown in full, near callers with blurb+snippet, far callers with snippet only). Output ONLY valid JSON: one key per symbol name, each with { "type": string, "call_sites": [{ "file": string, "usage_type": string, "count": number, "context": string }], "total_usages": number, "blast_radius": "local"|"narrow"|"moderate"|"broad" }',
           },
           {
             role: 'user',
@@ -219,7 +258,7 @@ export function createOllamaProvider(config: AtlasServerConfig): AtlasProvider {
         ],
       });
 
-      const text = stripCodeFences(readText(payload));
+      const text = stripCodeFences(extractAssistantText(payload));
       try {
         return JSON.parse(text);
       } catch {

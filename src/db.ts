@@ -10,6 +10,7 @@ import type {
   AtlasFileRecord,
   AtlasMetaRecord,
   AtlasQueueRecord,
+  SourceHighlight,
 } from './types.js';
 
 export interface AtlasStatement {
@@ -164,8 +165,6 @@ export interface AtlasSymbolUpsertInput {
 export interface AtlasMetaUpsertInput {
   workspace: string;
   source_root: string;
-  provider?: string | null;
-  provider_config?: Record<string, unknown>;
 }
 
 export interface AtlasFileUpsertInput {
@@ -185,6 +184,7 @@ export interface AtlasFileUpsertInput {
   hazards?: string[];
   conventions?: string[];
   cross_refs?: AtlasCrossRefs | null;
+  source_highlights?: SourceHighlight[];
   language?: string;
   extraction_model?: string | null;
   last_extracted?: string | null;
@@ -433,6 +433,7 @@ export function mapFileRecord(row: Record<string, unknown>): AtlasFileRecord {
     hazards: parseJson<string[]>(row.hazards, []),
     conventions: parseJson<string[]>(row.conventions, []),
     cross_refs: parseJson<AtlasCrossRefs | null>(row.cross_refs, null),
+    source_highlights: parseJson<SourceHighlight[]>(row.source_highlights, []),
     language: String(row.language ?? 'typescript'),
     extraction_model: row.extraction_model == null ? null : String(row.extraction_model),
     last_extracted: row.last_extracted == null ? null : String(row.last_extracted),
@@ -457,8 +458,6 @@ export function mapMetaRecord(row: Record<string, unknown>): AtlasMetaRecord {
   return {
     workspace: String(row.workspace ?? ''),
     source_root: String(row.source_root ?? ''),
-    provider: row.provider == null ? null : String(row.provider),
-    provider_config: parseJson<Record<string, unknown>>(row.provider_config, {}),
     updated_at: String(row.updated_at ?? ''),
   };
 }
@@ -1182,18 +1181,14 @@ export function replaceImportEdges(db: AtlasDatabase, workspace: string, edges: 
 
 export function upsertAtlasMeta(db: AtlasDatabase, input: AtlasMetaUpsertInput): void {
   db.prepare(
-    `INSERT INTO atlas_meta (workspace, source_root, provider, provider_config, updated_at)
-     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `INSERT INTO atlas_meta (workspace, source_root, updated_at)
+     VALUES (?, ?, CURRENT_TIMESTAMP)
      ON CONFLICT(workspace) DO UPDATE SET
        source_root = excluded.source_root,
-       provider = excluded.provider,
-       provider_config = excluded.provider_config,
        updated_at = CURRENT_TIMESTAMP`,
   ).run(
     input.workspace,
     input.source_root,
-    input.provider ?? null,
-    JSON.stringify(input.provider_config ?? {}),
   );
 }
 
@@ -1296,11 +1291,11 @@ export function upsertScanRecord(db: AtlasDatabase, record: {
     `INSERT INTO atlas_files (
        workspace, file_path, file_hash, cluster, loc, blurb, purpose,
        public_api, exports, patterns, dependencies, data_flows, key_types, hazards,
-       conventions, cross_refs, language, extraction_model, last_extracted, updated_at
+       conventions, cross_refs, source_highlights, language, extraction_model, last_extracted, updated_at
      ) VALUES (
        @workspace, @file_path, @file_hash, @cluster, @loc, '', '',
        '[]', @exports, '[]', @dependencies, '[]', '[]', '[]',
-       '[]', 'null', @language, NULL, NULL, CURRENT_TIMESTAMP
+       '[]', 'null', '[]', @language, NULL, NULL, CURRENT_TIMESTAMP
      )
      ON CONFLICT(workspace, file_path) DO UPDATE SET
        file_hash = excluded.file_hash,
@@ -1376,44 +1371,40 @@ function hasEmbedding(db: AtlasDatabase, fileId: number): boolean {
   }
 }
 
-export function getFilePhase(db: AtlasDatabase, workspace: string, filePath: string, currentHash: string): 'none' | 'summarize' | 'extract' | 'embed' | 'crossref' {
+/**
+ * Determine how far a file has progressed through the pipeline.
+ *
+ * In heuristic-only mode, the pipeline is: scan → structure → flow → crossref → cluster.
+ * Semantic fields (blurb, purpose, etc.) are no longer gating — they start empty and are
+ * populated organically via atlas_commit. The phase check now only cares about:
+ * - Does the file exist in the DB with a matching hash? ('none' if not)
+ * - Does it have structure data? ('structure' if so)
+ * - Does it have cross-refs? ('crossref' if so — fully complete)
+ */
+export function getFilePhase(db: AtlasDatabase, workspace: string, filePath: string, currentHash: string): 'none' | 'structure' | 'crossref' {
   const row = db.prepare(
-    `SELECT id, file_hash, blurb, purpose, extraction_model, cross_refs
+    `SELECT id, file_hash, cross_refs
      FROM atlas_files
      WHERE workspace = ? AND file_path = ? LIMIT 1`,
   ).get(workspace, filePath) as {
     id: number;
     file_hash: string | null;
-    blurb: string | null;
-    purpose: string | null;
-    extraction_model: string | null;
     cross_refs: string | null;
   } | undefined;
 
   if (!row) return 'none';
   // If hash changed, file needs full re-processing
   if (row.file_hash !== currentHash) return 'none';
-  if (!row.blurb || row.blurb.trim() === '') return 'none';
-  if (!row.purpose || row.purpose.trim() === '' || row.extraction_model === 'scaffold') return 'summarize';
 
-  // Has real extraction — at least extract complete.
   // Check cross_refs for actual symbol data (not just empty '{}' or 'null').
   const crossRefs = row.cross_refs;
   if (crossRefs && crossRefs !== 'null' && crossRefs !== '{}') {
     try {
       const parsed = JSON.parse(crossRefs);
-      // A real cross_refs has a 'symbols' object with at least one key,
-      // OR has total_exports_analyzed > 0 (meaning crossref ran, even if no symbols found)
       if (parsed && typeof parsed === 'object' && (
         (parsed.symbols && Object.keys(parsed.symbols).length > 0) ||
         (typeof parsed.total_exports_analyzed === 'number' && parsed.total_exports_analyzed >= 0 && (parsed.crossref_timestamp || parsed.pass2_timestamp))
       )) {
-        // Cross-refs exist, but verify embedding also exists.
-        // Embed can silently fail (e.g. broken vec0 table) while crossref succeeds,
-        // leaving the file stuck without an embedding forever.
-        if (!hasEmbedding(db, row.id)) {
-          return 'extract'; // re-run from embed onwards
-        }
         return 'crossref';
       }
     } catch {
@@ -1421,7 +1412,8 @@ export function getFilePhase(db: AtlasDatabase, workspace: string, filePath: str
     }
   }
 
-  return 'extract';
+  // File exists with matching hash but no cross-refs — structure is done
+  return 'structure';
 }
 
 export function upsertEmbedding(
@@ -1464,11 +1456,11 @@ export function upsertFileRecord(db: AtlasDatabase, record: AtlasFileUpsertInput
     `INSERT INTO atlas_files (
        workspace, file_path, file_hash, cluster, loc, blurb, purpose,
        public_api, exports, patterns, dependencies, data_flows, key_types, hazards,
-      conventions, cross_refs, language, extraction_model, last_extracted, updated_at
+       conventions, cross_refs, source_highlights, language, extraction_model, last_extracted, updated_at
      ) VALUES (
        @workspace, @file_path, @file_hash, @cluster, @loc, @blurb, @purpose,
        @public_api, @exports, @patterns, @dependencies, @data_flows, @key_types, @hazards,
-       @conventions, @cross_refs, @language, @extraction_model, @last_extracted, CURRENT_TIMESTAMP
+       @conventions, @cross_refs, @source_highlights, @language, @extraction_model, @last_extracted, CURRENT_TIMESTAMP
      )
      ON CONFLICT(workspace, file_path) DO UPDATE SET
        file_hash = excluded.file_hash,
@@ -1485,6 +1477,7 @@ export function upsertFileRecord(db: AtlasDatabase, record: AtlasFileUpsertInput
        hazards = excluded.hazards,
        conventions = excluded.conventions,
        cross_refs = excluded.cross_refs,
+       source_highlights = excluded.source_highlights,
        language = excluded.language,
        extraction_model = excluded.extraction_model,
        last_extracted = excluded.last_extracted,
@@ -1506,6 +1499,7 @@ export function upsertFileRecord(db: AtlasDatabase, record: AtlasFileUpsertInput
     hazards: JSON.stringify(record.hazards ?? []),
     conventions: JSON.stringify(record.conventions ?? []),
     cross_refs: JSON.stringify(record.cross_refs ?? {}),
+    source_highlights: JSON.stringify(record.source_highlights ?? []),
     language: record.language ?? 'typescript',
     extraction_model: record.extraction_model ?? null,
     last_extracted: record.last_extracted ?? null,

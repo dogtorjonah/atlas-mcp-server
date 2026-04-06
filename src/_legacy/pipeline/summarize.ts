@@ -1,3 +1,13 @@
+/**
+ * Legacy: LLM blurb generation phase.
+ *
+ * This module is retained for optional future use with an LLM provider, but is
+ * no longer called during the default heuristic-only pipeline. In heuristic-only
+ * mode, the `blurb` field starts empty and is populated organically by agents
+ * via `atlas_commit` as they work with the codebase. The agent that just edited
+ * or reviewed a file has the freshest understanding — its blurb is higher-quality
+ * than a cold extraction by a cheaper model.
+ */
 import type { AtlasDatabase } from '../db.js';
 import { listAtlasFiles, upsertFileRecord } from '../db.js';
 import type { AtlasFileRecord, AtlasProvider } from '../types.js';

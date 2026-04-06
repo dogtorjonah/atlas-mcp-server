@@ -11,15 +11,6 @@ export function registerFlushTool(server: McpServer, runtime: AtlasRuntime): voi
       files: z.array(z.string().min(1)).min(1),
     },
     async ({ files }: { files: string[] }) => {
-      if (!runtime.provider) {
-        return {
-          content: [{
-            type: 'text',
-            text: 'atlas_flush requires a configured provider. Start the server with API credentials or use init mode first.',
-          }],
-        };
-      }
-
       const workspace = runtime.config.workspace;
       const uniqueFiles = [...new Set(files.map((file) => file.trim()).filter(Boolean))];
 
@@ -32,7 +23,7 @@ export function registerFlushTool(server: McpServer, runtime: AtlasRuntime): voi
       return {
         content: [{
           type: 'text',
-          text: `Queued ${uniqueFiles.length} file${uniqueFiles.length === 1 ? '' : 's'} for immediate re-extraction.`,
+          text: `Queued ${uniqueFiles.length} file${uniqueFiles.length === 1 ? '' : 's'} for immediate re-extraction (heuristic pipeline).`,
         }],
       };
     },

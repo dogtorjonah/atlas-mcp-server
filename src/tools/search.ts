@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
 import type { AtlasDatabase } from '../db.js';
-import { searchAtlasFiles, searchFts, searchVector } from '../db.js';
+import { searchAtlasFiles, searchFts } from '../db.js';
 import { toolWithDescription } from './helpers.js';
 import { trackQuery } from '../queryLog.js';
 import { discoverWorkspaces } from './bridge.js';
@@ -11,38 +11,7 @@ interface RankedResult {
   file_path: string;
   score: number;
   record: AtlasFileRecord;
-  source: 'fts' | 'vector' | 'fallback';
-}
-
-function fuseResults(bm25: RankedResult[], vector: RankedResult[], k = 60): RankedResult[] {
-  const scores = new Map<string, { score: number; record: AtlasFileRecord; source: RankedResult['source'] }>();
-
-  bm25.forEach((result, index) => {
-    const current = scores.get(result.file_path);
-    scores.set(result.file_path, {
-      score: (current?.score ?? 0) + 1 / (k + index + 1),
-      record: current?.record ?? result.record,
-      source: current?.source ?? result.source,
-    });
-  });
-
-  vector.forEach((result, index) => {
-    const current = scores.get(result.file_path);
-    scores.set(result.file_path, {
-      score: (current?.score ?? 0) + 1 / (k + index + 1),
-      record: current?.record ?? result.record,
-      source: current?.source ?? result.source,
-    });
-  });
-
-  return [...scores.entries()]
-    .sort((left, right) => right[1].score - left[1].score)
-    .map(([filePath, value]) => ({
-      file_path: filePath,
-      score: value.score,
-      record: value.record,
-      source: value.source,
-    }));
+  source: 'fts' | 'fallback';
 }
 
 function mapHitsToRanked(hits: Array<{ file: AtlasFileRecord; score: number; source: 'fts' | 'vector' }>): RankedResult[] {
@@ -52,39 +21,29 @@ function mapHitsToRanked(hits: Array<{ file: AtlasFileRecord; score: number; sou
       file_path: hit.file.file_path,
       score: hit.score,
       record: hit.file,
-      source: hit.source,
+      source: 'fts' as const,
     }));
-}
-
-function fallbackSearch(runtime: AtlasRuntime, workspace: string, query: string, limit: number): RankedResult[] {
-  return searchAtlasFiles(runtime.db, workspace, query, limit).map((record, index) => ({
-    file_path: record.file_path,
-    score: 1 / (index + 1),
-    record,
-    source: 'fallback' as const,
-  }));
 }
 
 function formatResult(result: RankedResult): string {
   return `${result.record.file_path} — ${result.record.purpose || result.record.blurb}`;
 }
 
+// Primary path: BM25 full-text search via FTS5.
+// No API key required — search quality improves organically as agents
+// populate metadata via atlas_commit.
 function searchOneWorkspace(
   db: AtlasDatabase,
   ws: string,
   query: string,
   limit: number,
-  provider: AtlasRuntime['provider'],
-  embedding: number[] | null,
 ): RankedResult[] {
   const bm25Results = mapHitsToRanked(searchFts(db, ws, query, limit));
-  const vectorResults = embedding
-    ? mapHitsToRanked(searchVector(db, ws, embedding, limit))
-    : [];
 
-  if (bm25Results.length > 0 || vectorResults.length > 0) {
-    return fuseResults(bm25Results, vectorResults);
+  if (bm25Results.length > 0) {
+    return bm25Results;
   }
+  // Fallback: LIKE-based search when FTS index has no matches
   return searchAtlasFiles(db, ws, query, limit).map((record, index) => ({
     file_path: record.file_path,
     score: 1 / (index + 1),
@@ -125,12 +84,11 @@ export async function runSearchTool(runtime: AtlasRuntime, { query, limit, works
       return { content: [{ type: 'text', text: `No matching workspaces. Available: ${available}` }] };
     }
 
-    const embedding = runtime.provider ? await runtime.provider.embedText(query) : null;
     const perDbLimit = Math.max(maxResults, 10);
     const allResults: Array<RankedResult & { workspace: string }> = [];
 
     for (const bdb of targetDbs) {
-      const results = searchOneWorkspace(bdb.db, bdb.workspace, query, perDbLimit, runtime.provider, embedding);
+      const results = searchOneWorkspace(bdb.db, bdb.workspace, query, perDbLimit);
       for (const r of results) {
         allResults.push({ ...r, workspace: bdb.workspace });
       }
@@ -159,10 +117,10 @@ export async function runSearchTool(runtime: AtlasRuntime, { query, limit, works
     return { content: [{ type: 'text', text: header + '\n' + lines.join('\n\n') }] };
   }
 
-  // ── Single-workspace mode (existing behavior) ──
+  // ── Single-workspace mode ──
+  // Primary: BM25 full-text search. No API key required.
   const activeWorkspace = workspace ?? runtime.config.workspace;
-  const embedding = runtime.provider ? await runtime.provider.embedText(query) : null;
-  const results = searchOneWorkspace(runtime.db, activeWorkspace, query, maxResults, runtime.provider, embedding);
+  const results = searchOneWorkspace(runtime.db, activeWorkspace, query, maxResults);
 
   const sliced = results.slice(0, maxResults);
   trackQuery(
@@ -183,7 +141,7 @@ export async function runSearchTool(runtime: AtlasRuntime, { query, limit, works
 export function registerSearchTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_search',
-    'Search the codebase atlas using natural language. Finds relevant files by semantic similarity using vector embeddings matched against file purposes, patterns, and descriptions. Best for: "where does X happen?", "which files handle Y?", "find code related to Z". Supports cross-workspace search.',
+    'Search the codebase atlas using natural language. Uses BM25 full-text search over file purposes, patterns, and descriptions, with optional vector fusion when embeddings are available. The index grows organically as agents fill in metadata via atlas_commit. Best for: "where does X happen?", "which files handle Y?", "find code related to Z". Supports cross-workspace search. No API key required.',
     {
       query: z.string().min(1),
       limit: z.number().int().min(1).max(30).optional(),

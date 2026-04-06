@@ -7,8 +7,6 @@ import {
   insertAtlasChangelog,
   queryAtlasChangelog,
   searchChangelogFts,
-  searchChangelogVector,
-  upsertChangelogEmbedding,
 } from '../db.js';
 import { trackQuery } from '../queryLog.js';
 
@@ -21,16 +19,6 @@ interface RankedResult {
 
 function formatStringList(values: string[]): string {
   return values.length > 0 ? values.join(', ') : '(none)';
-}
-
-function buildEmbeddingInput(entry: AtlasChangelogRecord): string {
-  return [
-    entry.summary,
-    ...entry.patterns_added,
-    ...entry.patterns_removed,
-    ...entry.hazards_added,
-    ...entry.hazards_removed,
-  ].join(' ').trim();
 }
 
 function mapHitsToRanked(hits: AtlasChangelogSearchHit[]): RankedResult[] {
@@ -143,18 +131,6 @@ async function handleLog(runtime: AtlasRuntime, args: Record<string, unknown>) {
     review_entry_id: (args.review_entry_id as string) ?? null,
   });
 
-  if (runtime.provider) {
-    const embeddingInput = buildEmbeddingInput(entry);
-    if (embeddingInput) {
-      try {
-        const embedding = await runtime.provider.embedText(embeddingInput);
-        upsertChangelogEmbedding(runtime.db, entry.id, embedding);
-      } catch {
-        // Embedding failures are non-fatal; FTS remains available.
-      }
-    }
-  }
-
   return {
     content: [
       { type: 'text' as const, text: `Logged atlas changelog entry ${entry.id} for ${entry.file_path}.\n\n${formatEntry(entry)}` },
@@ -185,17 +161,7 @@ async function handleQuery(runtime: AtlasRuntime, args: Record<string, unknown>)
     const candidateLimit = Math.min(100, Math.max(maxResults * 5, 25));
     const bm25Results = mapHitsToRanked(searchChangelogFts(runtime.db, activeWorkspace, query, candidateLimit));
 
-    let vectorResults: RankedResult[] = [];
-    if (runtime.provider) {
-      try {
-        const embedding = await runtime.provider.embedText(query);
-        vectorResults = mapHitsToRanked(searchChangelogVector(runtime.db, activeWorkspace, embedding, candidateLimit));
-      } catch {
-        vectorResults = [];
-      }
-    }
-
-    const fused = fuseResults(bm25Results, vectorResults);
+    const fused = fuseResults(bm25Results, []);
     entries = fused
       .map((result) => result.record)
       .filter((entry) => matchesFilters(entry, filterSet))

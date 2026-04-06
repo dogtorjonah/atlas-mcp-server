@@ -7,11 +7,7 @@ import { createInterface } from 'node:readline/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { openAtlasDatabase } from './db.js';
-import { getAtlasDefaultModel, loadAtlasConfig, writeAtlasEnvFile } from './config.js';
-import { createAnthropicProvider } from './providers/anthropic.js';
-import { createGeminiProvider } from './providers/gemini.js';
-import { createOpenAIProvider } from './providers/openai.js';
-import { createOllamaProvider } from './providers/ollama.js';
+import { loadAtlasConfig } from './config.js';
 import { runFullPipeline } from './pipeline/index.js';
 import { startAtlasWatcher } from './watcher.js';
 import { registerChangelogTools } from './tools/changelog.js';
@@ -22,28 +18,11 @@ import { registerGraphCompositeTool } from './tools/graphComposite.js';
 import { registerAuditTool } from './tools/audit.js';
 import { registerAdminTool } from './tools/admin.js';
 import { ATLAS_CONTEXT_RESOURCE_URI, generateContextResource } from './resources/context.js';
-import type { AtlasRuntime, AtlasServerConfig } from './types.js';
-
-function createProvider(runtime: AtlasRuntime) {
-  switch (runtime.config.provider) {
-    case 'anthropic':
-      if (!runtime.config.anthropicApiKey) return undefined;
-      return createAnthropicProvider(runtime.config);
-    case 'ollama':
-      return createOllamaProvider(runtime.config);
-    case 'gemini':
-      if (!runtime.config.geminiApiKey) return undefined;
-      return createGeminiProvider(runtime.config);
-    default:
-      if (!runtime.config.openAiApiKey) return undefined;
-      return createOpenAIProvider(runtime.config);
-  }
-}
+import type { AtlasRuntime } from './types.js';
 
 function parseInitArgs(argv: string[]): {
   targetRoot: string;
   configArgs: string[];
-  skipCostConfirmation: boolean;
   useWizard: boolean;
   force: boolean;
   phase?: 'crossref';
@@ -51,7 +30,6 @@ function parseInitArgs(argv: string[]): {
 } {
   const configArgs: string[] = [];
   const files: string[] = [];
-  let skipCostConfirmation = false;
   let force = false;
   let wizardRequested = false;
   let phase: 'crossref' | undefined;
@@ -63,7 +41,7 @@ function parseInitArgs(argv: string[]): {
     if (!arg) continue;
 
     if (arg === '--yes') {
-      skipCostConfirmation = true;
+      // No-op: retained for CLI compat but no cost confirmation needed
       continue;
     }
     if (arg === '--wizard') {
@@ -109,11 +87,10 @@ function parseInitArgs(argv: string[]): {
     configArgs.push(arg);
   }
 
-  const useWizard = wizardRequested || (!skipCostConfirmation && argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY);
+  const useWizard = wizardRequested || (argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY);
   return {
     targetRoot,
     configArgs,
-    skipCostConfirmation,
     useWizard,
     force,
     phase,
@@ -169,46 +146,7 @@ function installGlobalMcpConfig(): void {
   }
 }
 
-function readInitProviderChoice(answer: string, fallback: AtlasServerConfig['provider']): AtlasServerConfig['provider'] {
-  const normalized = answer.trim().toLowerCase();
-  switch (normalized) {
-    case '1':
-    case 'openai':
-      return 'openai';
-    case '2':
-    case 'anthropic':
-      return 'anthropic';
-    case '3':
-    case 'gemini':
-      return 'gemini';
-    case '4':
-    case 'ollama':
-      return 'ollama';
-    default:
-      return fallback;
-  }
-}
-
-const PROVIDER_MODELS: Record<string, Array<{ value: string; label: string; default?: boolean }>> = {
-  openai: [
-    { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano — cheapest ($0.10/M in)', default: true },
-    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini — fast + capable ($0.40/M in)' },
-    { value: 'gpt-4o-mini', label: 'GPT-4o Mini — legacy cheap ($0.15/M in)' },
-  ],
-  anthropic: [
-    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 — fast + cheap ($1/M in)', default: true },
-  ],
-  gemini: [
-    { value: 'gemini-3-flash', label: 'Gemini 3 Flash — latest + fast', default: true },
-    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash — cheaper ($0.15/M in)' },
-  ],
-  ollama: [
-    { value: 'llama3.2', label: 'Llama 3.2 — general purpose', default: true },
-    { value: 'qwen2.5-coder', label: 'Qwen 2.5 Coder — code-focused' },
-  ],
-};
-
-async function promptInitWizard(config: AtlasServerConfig): Promise<AtlasServerConfig> {
+async function promptInitWizard(config: import('./types.js').AtlasServerConfig): Promise<import('./types.js').AtlasServerConfig> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     return config;
   }
@@ -234,82 +172,17 @@ async function promptInitWizard(config: AtlasServerConfig): Promise<AtlasServerC
     const workspaceAnswer = await rl.question(`  Workspace name [${workspaceDefault}]: `);
     const workspace = workspaceAnswer.trim() || workspaceDefault;
 
-    // 3. Provider
-    console.log('');
-    console.log('  AI Provider (for blurbs + deep extraction):');
-    console.log('    1) OpenAI       — gpt-4.1-nano');
-    console.log('    2) Anthropic    — claude-haiku-4.5');
-    console.log('    3) Gemini       — gemini-3-flash');
-    console.log('    4) Ollama       — llama3.2 (local)');
-    console.log('    5) None         — deterministic only (no API key needed)');
-    console.log('');
-    const providerAnswer = await rl.question(`  Choose provider [1-5] (default: ${config.provider}): `);
-    let provider = config.provider;
-    if (providerAnswer.trim() === '5' || providerAnswer.trim().toLowerCase() === 'none') {
-      provider = 'openai'; // use openai as placeholder, but no key = scaffold mode
-    } else if (providerAnswer.trim()) {
-      provider = readInitProviderChoice(providerAnswer, config.provider);
-    }
-    const isNoneProvider = providerAnswer.trim() === '5' || providerAnswer.trim().toLowerCase() === 'none';
-
-    // 4. Model selection
-    let model = getAtlasDefaultModel(provider);
-    if (!isNoneProvider) {
-      const models = PROVIDER_MODELS[provider] ?? [];
-      if (models.length > 0) {
-        console.log('');
-        console.log(`  Available ${provider} models:`);
-        models.forEach((m, i) => {
-          const marker = m.default ? ' (default)' : '';
-          console.log(`    ${i + 1}) ${m.value} — ${m.label}${marker}`);
-        });
-        console.log('');
-        const modelAnswer = await rl.question(`  Choose model [1-${models.length}] (default: 1): `);
-        const modelIndex = Number.parseInt(modelAnswer.trim(), 10) - 1;
-        if (modelIndex >= 0 && modelIndex < models.length) {
-          model = models[modelIndex]!.value;
-        } else if (modelAnswer.trim()) {
-          // Allow typing a custom model string
-          model = modelAnswer.trim();
-        }
-      }
-    }
-
-    // 5. Concurrency
+    // 3. Concurrency
     const concurrencyAnswer = await rl.question(`  Concurrency [${config.concurrency}]: `);
     const parsedConcurrency = Number.parseInt(concurrencyAnswer.trim(), 10);
     const concurrency = Number.isFinite(parsedConcurrency) && parsedConcurrency > 0 ? parsedConcurrency : config.concurrency;
-
-    // 6. API key (only for the chosen provider)
-    let openAiApiKey = config.openAiApiKey;
-    let anthropicApiKey = config.anthropicApiKey;
-    let geminiApiKey = config.geminiApiKey;
-    let ollamaBaseUrl = config.ollamaBaseUrl;
-
-    if (!isNoneProvider) {
-      console.log('');
-      if (provider === 'openai' && !config.openAiApiKey) {
-        openAiApiKey = (await rl.question('  OpenAI API key (starts with sk-proj-...): ')).trim();
-      }
-      if (provider === 'anthropic' && !config.anthropicApiKey) {
-        anthropicApiKey = (await rl.question('  Anthropic API key (starts with sk-ant-...): ')).trim();
-      }
-      if (provider === 'gemini' && !config.geminiApiKey) {
-        geminiApiKey = (await rl.question('  Gemini API key: ')).trim();
-      }
-      if (provider === 'ollama') {
-        const urlAnswer = await rl.question(`  Ollama base URL [${config.ollamaBaseUrl}]: `);
-        ollamaBaseUrl = urlAnswer.trim() || config.ollamaBaseUrl;
-      }
-    }
 
     // Summary
     console.log('');
     console.log('  ─────────────────────────────────────');
     console.log(`  Codebase:    ${sourceRoot}`);
     console.log(`  Workspace:   ${workspace}`);
-    console.log(`  Provider:    ${isNoneProvider ? 'none (deterministic only)' : provider}`);
-    if (!isNoneProvider) console.log(`  Model:       ${model}`);
+    console.log(`  Mode:        heuristic (no API key needed)`);
     console.log(`  Concurrency: ${concurrency}`);
     console.log('  ─────────────────────────────────────');
     console.log('');
@@ -319,13 +192,7 @@ async function promptInitWizard(config: AtlasServerConfig): Promise<AtlasServerC
       sourceRoot,
       workspace,
       dbPath: path.join(sourceRoot, '.atlas', 'atlas.sqlite'),
-      provider,
-      model,
       concurrency,
-      openAiApiKey,
-      anthropicApiKey,
-      geminiApiKey,
-      ollamaBaseUrl,
     };
   } finally {
     rl.close();
@@ -349,25 +216,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (initArgs?.force) {
       console.log('[atlas-init] --force supplied; database will be deleted and rebuilt from scratch');
     }
-    writeAtlasEnvFile(path.join(targetRoot, '.atlas', '.env'), {
-      ATLAS_PROVIDER: initConfig.provider,
-      ATLAS_MODEL: initConfig.model,
-      OPENAI_API_KEY: initConfig.openAiApiKey,
-      ANTHROPIC_API_KEY: initConfig.anthropicApiKey,
-      GEMINI_API_KEY: initConfig.geminiApiKey,
-      VOYAGE_API_KEY: initConfig.voyageApiKey,
-      OLLAMA_BASE_URL: initConfig.ollamaBaseUrl,
-    });
 
-    console.log('[atlas-init] starting init pipeline');
+    console.log('[atlas-init] starting heuristic pipeline');
     await runFullPipeline(targetRoot, {
       ...initConfig,
       sourceRoot: targetRoot,
       dbPath: initConfig.dbPath,
-      model: initConfig.model,
       concurrency: initConfig.concurrency,
       migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
-      skipCostConfirmation: initArgs?.skipCostConfirmation ?? false,
       force: initArgs?.force ?? false,
       phase: initArgs?.phase,
       files: initArgs?.files,
@@ -387,7 +243,6 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   });
 
   const runtime: AtlasRuntime = { config, db };
-  runtime.provider = createProvider(runtime);
 
   const server = new McpServer({
     name: '@voxxo/atlas',

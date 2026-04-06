@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
 import type { AtlasDatabase } from '../db.js';
-import { listAtlasFiles, listImportEdges, searchFts, searchVector } from '../db.js';
+import { listAtlasFiles, listImportEdges, searchFts } from '../db.js';
 import { discoverWorkspaces } from './bridge.js';
 import { toolWithDescription } from './helpers.js';
 
@@ -140,17 +140,7 @@ export async function runPlanContextTool(runtime: AtlasRuntime, {
   const candidateLimit = Math.max(maxSeeds * 3, 20);
   const ftsHits = searchFts(db, ws, task, candidateLimit).map((hit) => ({ file: hit.file, score: hit.score }));
 
-  let vectorHits: Array<{ file: AtlasFileRecord; score: number }> = [];
-  if (runtime.provider) {
-    try {
-      const embedding = await runtime.provider.embedText(task);
-      vectorHits = searchVector(db, ws, embedding, candidateLimit).map((hit) => ({ file: hit.file, score: hit.score }));
-    } catch {
-      vectorHits = [];
-    }
-  }
-
-  let seeds = fuseSeeds(ftsHits, vectorHits, maxSeeds);
+  let seeds = fuseSeeds(ftsHits, [], maxSeeds);
   if (seeds.length === 0) {
     seeds = fallbackSeeds(rows, task, maxSeeds);
   }
