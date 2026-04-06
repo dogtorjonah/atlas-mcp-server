@@ -13,13 +13,15 @@ const GAP_TYPES = [
   'exported_not_referenced',
   'imported_not_used',
   'installed_not_imported',
+  'incomplete_atlas_entry',
 ] as const;
 
 type GapType =
   | 'loaded_not_used'
   | 'exported_not_referenced'
   | 'imported_not_used'
-  | 'installed_not_imported';
+  | 'installed_not_imported'
+  | 'incomplete_atlas_entry';
 
 interface GapFinding {
   gapType: GapType;
@@ -43,6 +45,7 @@ const GAP_LABELS: Record<GapType, string> = {
   exported_not_referenced: 'exported_not_referenced',
   imported_not_used: 'imported_not_used',
   installed_not_imported: 'installed_not_imported',
+  incomplete_atlas_entry: 'incomplete_atlas_entry',
 };
 
 const MAX_FINDINGS = 200;
@@ -400,7 +403,7 @@ function formatFinding(finding: GapFinding): string {
 export function registerGapsTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_gaps',
-    'Detect structural gaps in the codebase: dead exports no one imports, unused imports, loaded-but-unused data, installed-but-never-imported packages. Can scope to a single file or cluster. Returns findings with confidence scores. Use during cleanup or before refactoring.',
+    'Detect structural gaps in the codebase: dead exports no one imports, unused imports, loaded-but-unused data, installed-but-never-imported packages, and incomplete atlas entries with missing metadata (blurb, purpose, cross_refs, hazards, etc.). Can scope to a single file or cluster. Returns findings with confidence scores. Use during cleanup or before refactoring.',
     {
       filePath: z.string().min(1).optional(),
       cluster: z.string().min(1).optional(),
@@ -598,6 +601,46 @@ export function registerGapsTool(server: McpServer, runtime: AtlasRuntime): void
             subject: '(unreadable package.json)',
             confidence: 0.2,
             evidence: ['failed to parse package.json; skipped dependency gap check'],
+          });
+        }
+      }
+
+      if (types.includes('incomplete_atlas_entry')) {
+        for (const file of scopedFiles) {
+          const missing: string[] = [];
+
+          if (!file.blurb || file.blurb.trim() === '') missing.push('blurb');
+          if (!file.purpose || file.purpose.trim() === '') missing.push('purpose');
+          if (!file.extraction_model || file.extraction_model === 'scaffold') missing.push('extraction (scaffold or none)');
+
+          const crossRefs = file.cross_refs;
+          if (!crossRefs || (typeof crossRefs === 'object' && (!crossRefs.symbols || Object.keys(crossRefs.symbols).length === 0) && !crossRefs.crossref_timestamp)) {
+            missing.push('cross_refs');
+          }
+
+          if ((file.hazards?.length ?? 0) === 0) missing.push('hazards');
+          if ((file.conventions?.length ?? 0) === 0) missing.push('conventions');
+          if ((file.key_types?.length ?? 0) === 0) missing.push('key_types');
+          if ((file.data_flows?.length ?? 0) === 0) missing.push('data_flows');
+
+          if (missing.length === 0) continue;
+
+          const totalChecked = 8;
+          const missingRatio = missing.length / totalChecked;
+          const confidence = clampConfidence(0.4 + missingRatio * 0.55);
+
+          findings.push({
+            gapType: 'incomplete_atlas_entry',
+            filePath: file.file_path,
+            subject: file.file_path,
+            confidence,
+            evidence: [
+              `missing: ${missing.join(', ')}`,
+              `${missing.length}/${totalChecked} metadata fields empty`,
+            ],
+            note: file.extraction_model
+              ? `last extraction by ${file.extraction_model}`
+              : 'never extracted',
           });
         }
       }

@@ -16,6 +16,7 @@ const GAP_TYPES = [
   'exported_not_referenced',
   'imported_not_used',
   'installed_not_imported',
+  'incomplete_atlas_entry',
 ] as const;
 
 type GapType = (typeof GAP_TYPES)[number];
@@ -65,6 +66,7 @@ const GAP_LABELS: Record<GapType, string> = {
   exported_not_referenced: 'exported_not_referenced',
   imported_not_used: 'imported_not_used',
   installed_not_imported: 'installed_not_imported',
+  incomplete_atlas_entry: 'incomplete_atlas_entry',
 };
 
 const MAX_FINDINGS = 200;
@@ -700,6 +702,51 @@ async function runGapsAction(
     }
   }
 
+  if (types.includes('incomplete_atlas_entry')) {
+    for (const file of scopedFiles) {
+      const missing: string[] = [];
+
+      // Check semantic metadata fields
+      if (!file.blurb || file.blurb.trim() === '') missing.push('blurb');
+      if (!file.purpose || file.purpose.trim() === '') missing.push('purpose');
+      if (!file.extraction_model || file.extraction_model === 'scaffold') missing.push('extraction (scaffold or none)');
+
+      // Check cross_refs completeness
+      const crossRefs = file.cross_refs;
+      if (!crossRefs || (typeof crossRefs === 'object' && (!crossRefs.symbols || Object.keys(crossRefs.symbols).length === 0) && !crossRefs.crossref_timestamp)) {
+        missing.push('cross_refs');
+      }
+
+      // Check structural metadata — empty arrays indicate fields never populated
+      if ((file.hazards?.length ?? 0) === 0) missing.push('hazards');
+      if ((file.conventions?.length ?? 0) === 0) missing.push('conventions');
+      if ((file.key_types?.length ?? 0) === 0) missing.push('key_types');
+      if ((file.data_flows?.length ?? 0) === 0) missing.push('data_flows');
+
+      if (missing.length === 0) continue;
+
+      // Score based on how many fields are missing — more missing = higher confidence it's truly incomplete
+      const totalChecked = 8; // blurb, purpose, extraction, cross_refs, hazards, conventions, key_types, data_flows
+      const missingRatio = missing.length / totalChecked;
+      // Files missing most fields (scaffold-only) get high confidence; files missing 1-2 get lower
+      const confidence = clampConfidence(0.4 + missingRatio * 0.55);
+
+      findings.push({
+        gapType: 'incomplete_atlas_entry',
+        filePath: file.file_path,
+        subject: file.file_path,
+        confidence,
+        evidence: [
+          `missing: ${missing.join(', ')}`,
+          `${missing.length}/${totalChecked} metadata fields empty`,
+        ],
+        note: file.extraction_model
+          ? `last extraction by ${file.extraction_model}`
+          : 'never extracted',
+      });
+    }
+  }
+
   const out = resolveFormat(args.format);
   const totalFindings = findings.length;
   const displayedFindings = findings.slice(0, MAX_FINDINGS);
@@ -747,6 +794,12 @@ async function runGapsAction(
     content.push({
       type: 'text',
       text: '💡 Consider removing unused exports, or run `atlas_admin action=reindex phase=crossref` if they might be stale cross-refs.',
+    });
+  }
+  if (findings.some((finding) => finding.gapType === 'incomplete_atlas_entry')) {
+    content.push({
+      type: 'text',
+      text: '💡 Run `atlas_admin action=reindex` to populate missing metadata, or use `atlas_commit` after editing files to fill in blurb/purpose.',
     });
   }
   return { content };
@@ -1049,7 +1102,7 @@ export function registerAuditTool(server: McpServer, runtime: AtlasRuntime): voi
     [
       'Strategic quality and risk tool for deciding where to inspect, clean up, or harden the codebase next.',
       'Use atlas_audit when you want actionable quality signals instead of raw retrieval or graph traversal.',
-      'Actions: gaps finds structural negative space such as exported-but-unreferenced, imported-but-unused, or loaded-but-unused artifacts; smells ranks files by combined maintainability signals; hotspots ranks files by risk using churn, coupling, hazards, and reference activity.',
+      'Actions: gaps finds structural negative space such as exported-but-unreferenced, imported-but-unused, loaded-but-unused artifacts, and incomplete atlas entries (missing blurb, purpose, cross_refs, or other metadata); smells ranks files by combined maintainability signals; hotspots ranks files by risk using churn, coupling, hazards, and reference activity.',
       'Workflow hints: run gaps during cleanup or after refactors to find dead or stale wiring; run smells when you need a short list of high-friction files worth redesigning; run hotspots before investing review time so you start with the riskiest files or clusters first. Scope by cluster when exploring one subsystem and exclude tests only when you are sure you want production-facing signals only.',
       'The results are stronger now because they can lean on richer Atlas inputs, including AST-derived structure, deterministic flow analysis, crossref phase context, and community clustering to identify where complexity and coupling accumulate.',
     ].join('\n'),

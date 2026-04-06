@@ -46,6 +46,64 @@ function computeCurrentFileHash(filePath: string, sourceRoot: string): string | 
   }
 }
 
+// ── Atlas Commit File Claims ─────────────────────────────────────────────────
+// In-memory lock map preventing concurrent atlas_commit writes to the same file.
+// When 10 agents are enriching the atlas in parallel, two can race on the same
+// file — both read the existing record, both merge, second write stomps first.
+// This lock serializes writes per file_path with a TTL for crash safety.
+
+interface AtlasFileClaim {
+  holder: string;       // author_instance_id or fallback identifier
+  workspace: string;
+  claimedAt: number;    // Date.now()
+}
+
+const ATLAS_CLAIM_TTL_MS = 30_000; // 30 seconds — enough for a commit, short enough to recover from crashes
+const atlasFileClaims = new Map<string, AtlasFileClaim>();
+
+function claimKey(workspace: string, filePath: string): string {
+  return `${workspace}::${filePath}`;
+}
+
+function tryAcquireAtlasClaim(workspace: string, filePath: string, holder: string): { acquired: true } | { acquired: false; holder: string; secondsRemaining: number } {
+  const key = claimKey(workspace, filePath);
+  const existing = atlasFileClaims.get(key);
+  const now = Date.now();
+
+  if (existing) {
+    const elapsed = now - existing.claimedAt;
+    if (elapsed < ATLAS_CLAIM_TTL_MS && existing.holder !== holder) {
+      return {
+        acquired: false,
+        holder: existing.holder,
+        secondsRemaining: Math.ceil((ATLAS_CLAIM_TTL_MS - elapsed) / 1000),
+      };
+    }
+    // Expired or same holder — reclaim
+  }
+
+  atlasFileClaims.set(key, { holder, workspace, claimedAt: now });
+  return { acquired: true };
+}
+
+function releaseAtlasClaim(workspace: string, filePath: string, holder: string): void {
+  const key = claimKey(workspace, filePath);
+  const existing = atlasFileClaims.get(key);
+  if (existing && existing.holder === holder) {
+    atlasFileClaims.delete(key);
+  }
+}
+
+// Periodic cleanup of expired claims (prevents memory leak on long-running servers)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, claim] of atlasFileClaims) {
+    if (now - claim.claimedAt > ATLAS_CLAIM_TTL_MS) {
+      atlasFileClaims.delete(key);
+    }
+  }
+}, 60_000);
+
 const apiEntrySchema = z.object({
   name: z.string(),
   type: z.string(),
@@ -179,114 +237,177 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         );
       }
 
-      // ── Step 1: Write changelog entry ──────────────────────────────────
-      const entry = insertAtlasChangelog(runtime.db, {
-        workspace: runtime.config.workspace,
-        file_path,
-        summary,
-        patterns_added,
-        patterns_removed,
-        hazards_added,
-        hazards_removed,
-        cluster: cluster ?? null,
-        breaking_changes,
-        commit_sha: commit_sha ?? null,
-        author_instance_id: author_instance_id ?? null,
-        author_engine: author_engine ?? null,
-        review_entry_id: review_entry_id ?? null,
-        source: 'atlas_commit',
-      });
-
-      // ── Step 2: Inline atlas_files update (required) ───────────────────
-      // Read existing record to merge with — we only overwrite fields the
-      // agent explicitly provided, preserving everything else.
-      const existing = getAtlasFile(runtime.db, runtime.config.workspace, file_path);
-
-      const mergedPurpose = purpose ?? existing?.purpose ?? '';
-      const mergedBlurb = blurb ?? existing?.blurb ?? '';
-      const mergedPatterns = patterns ?? existing?.patterns ?? [];
-      const mergedHazards = hazards ?? existing?.hazards ?? [];
-      const mergedConventions = conventions ?? existing?.conventions ?? [];
-      const mergedPublicApi = public_api ?? existing?.public_api ?? [];
-      const mergedExports = public_api
-        ? public_api.map((a) => ({ name: a.name, type: a.type }))
-        : existing?.exports ?? [];
-      const mergedKeyTypes = key_types ?? existing?.key_types ?? [];
-      const mergedDataFlows = data_flows ?? existing?.data_flows ?? [];
-      const mergedDependencies = dependencies ?? existing?.dependencies ?? {};
-      const mergedSourceHighlights = source_highlights ?? existing?.source_highlights ?? [];
-
-      upsertFileRecord(runtime.db, {
-        workspace: runtime.config.workspace,
-        file_path,
-        file_hash: computeCurrentFileHash(file_path, runtime.config.sourceRoot) ?? existing?.file_hash ?? null,
-        cluster: cluster ?? existing?.cluster ?? null,
-        loc: existing?.loc ?? 0,
-        blurb: mergedBlurb,
-        purpose: mergedPurpose,
-        public_api: mergedPublicApi,
-        exports: mergedExports,
-        patterns: mergedPatterns,
-        dependencies: mergedDependencies,
-        data_flows: mergedDataFlows,
-        key_types: mergedKeyTypes,
-        hazards: mergedHazards,
-        conventions: mergedConventions,
-        cross_refs: existing?.cross_refs ?? null,
-        source_highlights: mergedSourceHighlights,
-        language: existing?.language ?? 'typescript',
-        extraction_model: `${author_engine ?? 'agent'}/atlas_commit`,
-        last_extracted: new Date().toISOString(),
-      });
-
-      // ── Step 3: Build response ─────────────────────────────────────────
-      const parts = [
-        `Atlas commit #${entry.id} for ${file_path}`,
-        `Summary: ${entry.summary}`,
-      ];
-
-      if (entry.patterns_added.length > 0) {
-        parts.push(`Patterns added: ${entry.patterns_added.join(', ')}`);
-      }
-      if (entry.patterns_removed.length > 0) {
-        parts.push(`Patterns removed: ${entry.patterns_removed.join(', ')}`);
-      }
-      if (entry.hazards_added.length > 0) {
-        parts.push(`Hazards added: ${entry.hazards_added.join(', ')}`);
-      }
-      if (entry.hazards_removed.length > 0) {
-        parts.push(`Hazards removed: ${entry.hazards_removed.join(', ')}`);
-      }
-      if (entry.breaking_changes) {
-        parts.push('⚠ Breaking changes flagged');
-      }
-
-      const fields = [
-        purpose !== undefined && 'purpose',
-        public_api !== undefined && 'public_api',
-        patterns !== undefined && 'patterns',
-        hazards !== undefined && 'hazards',
-        conventions !== undefined && 'conventions',
-        key_types !== undefined && 'key_types',
-        data_flows !== undefined && 'data_flows',
-        dependencies !== undefined && 'dependencies',
-        blurb !== undefined && 'blurb',
-        source_highlights !== undefined && `source_highlights (${source_highlights?.length ?? 0} snippets)`,
-      ].filter(Boolean);
-      parts.push(`Atlas entry updated inline: ${fields.join(', ')}`);
-
-      return {
-        content: [
-          {
+      // ── Step 0: Acquire atlas file claim ────────────────────────────────
+      // Prevents concurrent atlas_commit writes to the same file. When 10
+      // agents enrich the atlas in parallel, two can race on the same file —
+      // both read the existing record, both merge, second write stomps first.
+      const holder = author_instance_id ?? `anon-${Date.now()}`;
+      const claimResult = tryAcquireAtlasClaim(runtime.config.workspace, file_path, holder);
+      if (!claimResult.acquired) {
+        return {
+          content: [{
             type: 'text' as const,
-            text: parts.join('\n'),
-          },
-          {
+            text: [
+              `⛔ Atlas file claim conflict: \`${file_path}\` is currently being written by instance \`${claimResult.holder}\`.`,
+              `Claim expires in ~${claimResult.secondsRemaining}s. Wait and retry, or pick a different file.`,
+              '',
+              '💡 To avoid collisions during wide atlas enrichment, partition files by cluster across agents.',
+            ].join('\n'),
+          }],
+        };
+      }
+
+      try {
+        // ── Step 1: Write changelog entry ──────────────────────────────────
+        const entry = insertAtlasChangelog(runtime.db, {
+          workspace: runtime.config.workspace,
+          file_path,
+          summary,
+          patterns_added,
+          patterns_removed,
+          hazards_added,
+          hazards_removed,
+          cluster: cluster ?? null,
+          breaking_changes,
+          commit_sha: commit_sha ?? null,
+          author_instance_id: author_instance_id ?? null,
+          author_engine: author_engine ?? null,
+          review_entry_id: review_entry_id ?? null,
+          source: 'atlas_commit',
+        });
+
+        // ── Step 2: Inline atlas_files update (required) ───────────────────
+        // Read existing record to merge with — we only overwrite fields the
+        // agent explicitly provided, preserving everything else.
+        const existing = getAtlasFile(runtime.db, runtime.config.workspace, file_path);
+
+        const mergedPurpose = purpose ?? existing?.purpose ?? '';
+        const mergedBlurb = blurb ?? existing?.blurb ?? '';
+        const mergedPatterns = patterns ?? existing?.patterns ?? [];
+        const mergedHazards = hazards ?? existing?.hazards ?? [];
+        const mergedConventions = conventions ?? existing?.conventions ?? [];
+        const mergedPublicApi = public_api ?? existing?.public_api ?? [];
+        const mergedExports = public_api
+          ? public_api.map((a) => ({ name: a.name, type: a.type }))
+          : existing?.exports ?? [];
+        const mergedKeyTypes = key_types ?? existing?.key_types ?? [];
+        const mergedDataFlows = data_flows ?? existing?.data_flows ?? [];
+        const mergedDependencies = dependencies ?? existing?.dependencies ?? {};
+        const mergedSourceHighlights = source_highlights ?? existing?.source_highlights ?? [];
+
+        upsertFileRecord(runtime.db, {
+          workspace: runtime.config.workspace,
+          file_path,
+          file_hash: computeCurrentFileHash(file_path, runtime.config.sourceRoot) ?? existing?.file_hash ?? null,
+          cluster: cluster ?? existing?.cluster ?? null,
+          loc: existing?.loc ?? 0,
+          blurb: mergedBlurb,
+          purpose: mergedPurpose,
+          public_api: mergedPublicApi,
+          exports: mergedExports,
+          patterns: mergedPatterns,
+          dependencies: mergedDependencies,
+          data_flows: mergedDataFlows,
+          key_types: mergedKeyTypes,
+          hazards: mergedHazards,
+          conventions: mergedConventions,
+          cross_refs: existing?.cross_refs ?? null,
+          source_highlights: mergedSourceHighlights,
+          language: existing?.language ?? 'typescript',
+          extraction_model: `${author_engine ?? 'agent'}/atlas_commit`,
+          last_extracted: new Date().toISOString(),
+        });
+
+        // ── Step 3: Coverage audit — what's still empty after merge? ───────
+        // The whole point of atlas_commit is filling structured fields. If the
+        // record is still hollow after this commit, the agent needs to know.
+        const stillEmpty: string[] = [];
+        if (!mergedPurpose || mergedPurpose.trim() === '') stillEmpty.push('purpose');
+        if (!mergedBlurb || mergedBlurb.trim() === '') stillEmpty.push('blurb');
+        if (mergedPatterns.length === 0) stillEmpty.push('patterns');
+        if (mergedHazards.length === 0) stillEmpty.push('hazards');
+        if (mergedConventions.length === 0) stillEmpty.push('conventions');
+        if (mergedKeyTypes.length === 0) stillEmpty.push('key_types');
+        if (mergedDataFlows.length === 0) stillEmpty.push('data_flows');
+        if (mergedPublicApi.length === 0) stillEmpty.push('public_api');
+        if (mergedSourceHighlights.length === 0) stillEmpty.push('source_highlights');
+
+        const totalFields = 9; // purpose, blurb, patterns, hazards, conventions, key_types, data_flows, public_api, source_highlights
+        const filledCount = totalFields - stillEmpty.length;
+        const coveragePct = Math.round((filledCount / totalFields) * 100);
+
+        // ── Step 4: Build response ─────────────────────────────────────────
+        const parts = [
+          `Atlas commit #${entry.id} for ${file_path}`,
+          `Summary: ${entry.summary}`,
+        ];
+
+        if (entry.patterns_added.length > 0) {
+          parts.push(`Patterns added: ${entry.patterns_added.join(', ')}`);
+        }
+        if (entry.patterns_removed.length > 0) {
+          parts.push(`Patterns removed: ${entry.patterns_removed.join(', ')}`);
+        }
+        if (entry.hazards_added.length > 0) {
+          parts.push(`Hazards added: ${entry.hazards_added.join(', ')}`);
+        }
+        if (entry.hazards_removed.length > 0) {
+          parts.push(`Hazards removed: ${entry.hazards_removed.join(', ')}`);
+        }
+        if (entry.breaking_changes) {
+          parts.push('⚠ Breaking changes flagged');
+        }
+
+        const fields = [
+          purpose !== undefined && 'purpose',
+          public_api !== undefined && 'public_api',
+          patterns !== undefined && 'patterns',
+          hazards !== undefined && 'hazards',
+          conventions !== undefined && 'conventions',
+          key_types !== undefined && 'key_types',
+          data_flows !== undefined && 'data_flows',
+          dependencies !== undefined && 'dependencies',
+          blurb !== undefined && 'blurb',
+          source_highlights !== undefined && `source_highlights (${source_highlights?.length ?? 0} snippets)`,
+        ].filter(Boolean);
+        parts.push(`Atlas entry updated: ${fields.join(', ')}`);
+        parts.push(`Coverage: ${filledCount}/${totalFields} fields (${coveragePct}%)`);
+
+        const content: Array<{ type: 'text'; text: string }> = [{
+          type: 'text' as const,
+          text: parts.join('\n'),
+        }];
+
+        // Coverage warnings — escalating severity
+        if (stillEmpty.length > 0 && coveragePct < 50) {
+          content.push({
             type: 'text' as const,
-            text: '💡 If you changed exports or public API, run `atlas_admin action=flush files=[...]` to refresh cross-references for downstream consumers.',
-          },
-        ],
-      };
+            text: [
+              `⚠️ LOW COVERAGE (${coveragePct}%) — this entry is still mostly hollow.`,
+              `Empty fields: ${stillEmpty.join(', ')}`,
+              '',
+              'The whole point of atlas_commit is replacing AI extraction with agent knowledge.',
+              'You have the context RIGHT NOW — fill in the structured fields, not just a summary.',
+              'At minimum: purpose + blurb + hazards + patterns. Future agents depend on this data.',
+            ].join('\n'),
+          });
+        } else if (stillEmpty.length > 0) {
+          content.push({
+            type: 'text' as const,
+            text: `📋 Still empty: ${stillEmpty.join(', ')} — consider filling these on your next commit to this file.`,
+          });
+        }
+
+        content.push({
+          type: 'text' as const,
+          text: '💡 If you changed exports or public API, run `atlas_admin action=flush files=[...]` to refresh cross-references for downstream consumers.',
+        });
+
+        return { content };
+      } finally {
+        // Always release the claim, even if an error occurs during the write
+        releaseAtlasClaim(runtime.config.workspace, file_path, holder);
+      }
     },
   );
 }
