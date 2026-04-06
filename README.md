@@ -18,7 +18,7 @@ All phases are fully deterministic and heuristic — no LLM calls, no API key, n
 
 The schema includes rich metadata fields — `purpose`, `blurb`, `public_api`, `patterns`, `hazards`, `conventions`, `key_types`, `data_flows`, `source_highlights` — that **start empty** after the initial pipeline run.
 
-These fields are populated **organically by agents** as they work with the codebase. When an agent edits or reviews a file, it calls `atlas_commit` to write back what it learned. The agent that just modified the code has maximum context — its metadata is higher quality than any cold extraction pass.
+These fields are populated **organically by agents** as they work with the codebase. When an agent edits or reviews a file, it calls `atlas_commit` to write back what it learned. The agent that just modified the code has maximum context — its metadata is higher quality than any pre-computed snapshot.
 
 **The more you use Atlas, the smarter it gets.** Each `atlas_commit` enriches the index, improves BM25 search results, and helps future agents orient faster.
 
