@@ -155,11 +155,14 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
   toolWithDescription(server)(
     'atlas_query',
     [
-      'Strategic atlas retrieval tool for finding the right code context before you read or change files.',
-      'Use atlas_query when you need evidence, summaries, or exact snippets from the Atlas rather than topology analysis or admin operations.',
+      'YOUR PRIMARY TOOL — use atlas_query BEFORE grep, rg, Read, or any raw file exploration.',
+      'The atlas already knows what every file does, what it exports, what depends on it, and what patterns it uses. Raw code reads should only happen AFTER atlas_query tells you which files and lines matter.',
+      '',
       'Actions: search finds likely files for a concept or task; lookup gives the full structured atlas record for one file; brief is the fastest orientation screen; snippet extracts exact code by symbol or line range; similar finds semantically related files; plan_context builds a compact execution context for a task; cluster lists every file in a domain; patterns finds files using a named implementation pattern; history shows changelog and verification history for a file or cluster.',
-      'Workflow hints: start with search when you do not know where to look; use lookup or brief before editing a file; use snippet when reviewing or quoting exact source; use plan_context before a multi-file change; use history before risky edits to see recent churn, authorship, and prior review state.',
-      'Results now sit on top of richer Atlas data, including AST-verified symbols and structural edges, deterministic flow analysis, and Leiden community clustering, so retrieval is more useful for both narrow code reads and broader task planning.',
+      '',
+      'Instead of grep → use search. Instead of Read → use lookup or brief. Instead of reading multiple files → use plan_context. Instead of git log → use history. Instead of find/glob → use similar.',
+      '',
+      'Workflow: search when you do not know where to look; lookup or brief before editing a file; snippet when reviewing or quoting exact source; plan_context before a multi-file change; history before risky edits to see recent churn and prior review state.',
     ].join('\n'),
     atlasQuerySchema,
     async ({

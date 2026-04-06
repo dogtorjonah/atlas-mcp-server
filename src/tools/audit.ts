@@ -1100,11 +1100,11 @@ export function registerAuditTool(server: McpServer, runtime: AtlasRuntime): voi
   toolWithDescription(server)(
     'atlas_audit',
     [
-      'Strategic quality and risk tool for deciding where to inspect, clean up, or harden the codebase next.',
-      'Use atlas_audit when you want actionable quality signals instead of raw retrieval or graph traversal.',
-      'Actions: gaps finds structural negative space such as exported-but-unreferenced, imported-but-unused, loaded-but-unused artifacts, and incomplete atlas entries (missing blurb, purpose, cross_refs, or other metadata); smells ranks files by combined maintainability signals; hotspots ranks files by risk using churn, coupling, hazards, and reference activity.',
-      'Workflow hints: run gaps during cleanup or after refactors to find dead or stale wiring; run smells when you need a short list of high-friction files worth redesigning; run hotspots before investing review time so you start with the riskiest files or clusters first. Scope by cluster when exploring one subsystem and exclude tests only when you are sure you want production-facing signals only.',
-      'The results are stronger now because they can lean on richer Atlas inputs, including AST-derived structure, deterministic flow analysis, crossref phase context, and community clustering to identify where complexity and coupling accumulate.',
+      'Quality and risk scanner — use atlas_audit to find what needs attention instead of manually reviewing files.',
+      '',
+      'Actions: gaps finds dead code and incomplete atlas entries — exported-but-unreferenced, imported-but-unused, loaded-but-unused artifacts, installed-but-not-imported packages, and files with hollow atlas records (missing blurb, purpose, hazards, etc.); smells ranks files by combined maintainability signals; hotspots ranks files by risk using churn, coupling, hazards, and reference activity.',
+      '',
+      'Use gaps with gapTypes=["incomplete_atlas_entry"] to find which files still need agent enrichment via atlas_commit. Use hotspots before investing review time. Use smells to find high-friction files worth redesigning. Scope by cluster to focus on one subsystem.',
     ].join('\n'),
     {
       action: z.enum(['gaps', 'smells', 'hotspots']),

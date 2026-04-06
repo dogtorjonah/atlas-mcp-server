@@ -121,11 +121,12 @@ export function registerGraphCompositeTool(server: McpServer, runtime: AtlasRunt
   toolWithDescription(server)(
     'atlas_graph',
     [
-      'Strategic graph and topology tool for understanding code relationships before making structural changes.',
-      'Use atlas_graph when the question is about blast radius, dependency shape, paths, cycles, or neighborhood structure rather than document retrieval.',
+      'Use atlas_graph BEFORE any structural change — do not guess at blast radius or dependency chains.',
+      'This tool knows the full import graph, AST-verified structural edges, and community clusters. Use it instead of manually tracing imports across files.',
+      '',
       'Actions: impact estimates downstream change surface for a file or symbol; neighbors shows the local structural neighborhood around a file; trace follows paths between files or symbols; cycles finds strongly connected regions; reachability answers dead-code, entrypoint, or path-query questions; graph gives a broader topology snapshot with edge filters and graph limits; cluster lists all files in a named community cluster.',
-      'Workflow hints: run action=impact before editing shared modules; use neighbors when orienting around one file; use trace to explain why two areas are connected; use cycles before refactors intended to untangle coupling; use reachability to confirm dead files or shortest import paths; use graph when you need the broadest view of a subsystem.',
-      'These results now benefit from the newer Atlas pipeline: AST-verified structural references, deterministic flow edges, and community clustering provide better graph fidelity than import-only analysis.',
+      '',
+      'Key rule: run action=impact BEFORE editing any shared module. Use neighbors to orient around one file. Use trace to explain why two areas are connected. Use reachability to confirm dead files.',
     ].join('\n'),
     {
       action: z.enum(['impact', 'neighbors', 'trace', 'cycles', 'reachability', 'graph', 'cluster']),
