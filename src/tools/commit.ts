@@ -142,6 +142,9 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       '',
       'Fill in ANY empty fields you can — not just the ones related to your edit. You have the context right now; a future agent won\'t.',
       'The more agents commit knowledge, the richer the Atlas becomes. The most-touched files accumulate the best metadata — exactly the right priority.',
+      '',
+      '## Changelog — Built In (No Separate Call Needed)',
+      'atlas_commit IS the changelog. Every call automatically creates a changelog entry. Include `patterns_added`, `patterns_removed`, `hazards_added`, `hazards_removed` to record what changed — this is what `atlas_changelog action=query` returns. You do NOT need a separate `atlas_changelog action=log` call.',
     ].join('\n'),
     {
       // ── Changelog fields (same as atlas_log) ──
@@ -395,6 +398,22 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
           content.push({
             type: 'text' as const,
             text: `📋 Still empty: ${stillEmpty.join(', ')} — consider filling these on your next commit to this file.`,
+          });
+        }
+
+        // Changelog completeness nudge — atlas_commit IS the changelog.
+        // When agents skip the changelog fields, the history becomes hollow
+        // (just a summary with no patterns/hazards delta). Nudge them to fill
+        // in the structured changelog fields so future agents can see exactly
+        // what changed at a glance without reading raw diffs.
+        const hasChangelogFields = (patterns_added && patterns_added.length > 0)
+          || (patterns_removed && patterns_removed.length > 0)
+          || (hazards_added && hazards_added.length > 0)
+          || (hazards_removed && hazards_removed.length > 0);
+        if (!hasChangelogFields) {
+          content.push({
+            type: 'text' as const,
+            text: '📝 Changelog hint: You didn\'t pass patterns_added/removed or hazards_added/removed. atlas_commit IS the changelog — include these fields so `atlas_changelog action=query` shows what patterns/hazards changed. No separate atlas_changelog call needed.',
           });
         }
 
