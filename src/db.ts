@@ -261,14 +261,40 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
   db.pragma('foreign_keys = ON');
   const vecLoaded = loadSqliteVec(db, options.sqliteVecExtension);
 
+  // Migration tracking — only run each migration file once
+  db.exec(`CREATE TABLE IF NOT EXISTS atlas_schema_migrations (
+    filename TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+
+  const appliedSet = new Set(
+    (db.prepare('SELECT filename FROM atlas_schema_migrations').all() as { filename: string }[])
+      .map((r) => r.filename),
+  );
+
   for (const migrationPath of readMigrationFiles(options.migrationDir)) {
+    const filename = path.basename(migrationPath);
+    if (appliedSet.has(filename)) continue;
+
     const sql = fs.readFileSync(migrationPath, 'utf8');
     // Run everything except vec0 statements first, then attempt vec0 separately
     const vec0Pattern = /CREATE\s+VIRTUAL\s+TABLE[^;]*USING\s+vec0\s*\([^)]*\)\s*;/gi;
     const vec0Statements = sql.match(vec0Pattern) ?? [];
     const sqlWithoutVec0 = sql.replace(vec0Pattern, '');
 
-    db.exec(sqlWithoutVec0);
+    try {
+      db.exec(sqlWithoutVec0);
+    } catch (err) {
+      // Bootstrap tolerance: existing DBs won't have the tracking table yet,
+      // so we may re-run migrations whose effects already exist (e.g., ALTER TABLE
+      // ADD COLUMN on a column that's already there). Treat as already-applied.
+      if (err instanceof Error && /duplicate column name|already exists/i.test(err.message)) {
+        console.log(`[atlas] Migration ${filename} already applied (bootstrap) — skipping`);
+        db.prepare('INSERT INTO atlas_schema_migrations (filename) VALUES (?)').run(filename);
+        continue;
+      }
+      throw err;
+    }
 
     for (const vec0Stmt of vec0Statements) {
       try {
@@ -277,6 +303,8 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
         console.warn('[atlas] Skipping vec0 table — sqlite-vec extension not available');
       }
     }
+
+    db.prepare('INSERT INTO atlas_schema_migrations (filename) VALUES (?)').run(filename);
   }
 
   // If the extension loaded, verify the vec0 table is functional and heal if needed
