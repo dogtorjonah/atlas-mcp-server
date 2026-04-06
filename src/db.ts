@@ -1402,7 +1402,7 @@ function hasEmbedding(db: AtlasDatabase, fileId: number): boolean {
 /**
  * Determine how far a file has progressed through the pipeline.
  *
- * In heuristic-only mode, the pipeline is: scan → structure → flow → crossref → cluster.
+ * The pipeline is: scan → structure → flow → crossref → cluster.
  * Semantic fields (blurb, purpose, etc.) are no longer gating — they start empty and are
  * populated organically via atlas_commit. The phase check now only cares about:
  * - Does the file exist in the DB with a matching hash? ('none' if not)

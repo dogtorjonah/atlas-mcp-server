@@ -168,7 +168,6 @@ export async function runReindexTool(runtime: AtlasRuntime, {
         const completionLines = [
           `✅ ${modeLabel} completed ${agoSec}s ago (ran for ${durationSec}s)`,
           `  ${completed.succeeded} succeeded, ${completed.failed} failed`,
-          `Mode: heuristic (no API key required)`,
         ];
         if (completed.warning) {
           completionLines.push('', completed.warning);
@@ -228,7 +227,6 @@ export async function runReindexTool(runtime: AtlasRuntime, {
               `${activeMode === 'crossref' ? 'Crossref rerun' : 'Reindex'} in progress: ${buildPercentBar(overallPercent)} ${overallPercent}%, running for ${elapsed}s`,
               `Phase: ${currentLabel} (${current?.processed ?? 0}/${current?.total ?? 0}, ${currentPercent})`,
               `Target files in current phase: ${current?.total ?? reindexFileCount.get(activeWorkspace) ?? '?'}`,
-              `Mode: heuristic (no API key required)`,
               `Atlas context will update when complete.`,
             ].join('\n'),
           }],
@@ -239,7 +237,6 @@ export async function runReindexTool(runtime: AtlasRuntime, {
           type: 'text',
           text: [
             `${activeMode === 'crossref' ? 'Crossref rerun' : 'Reindex'} in progress: ${reindexFileCount.get(activeWorkspace) ?? '?'} files, running for ${elapsed}s`,
-            `Mode: heuristic (no API key required)`,
             `Atlas context will update when complete.`,
           ].join('\n'),
         }],
@@ -287,7 +284,6 @@ export async function runReindexTool(runtime: AtlasRuntime, {
       }
       const willProcess = alreadyComplete + eligible;
       lines.push(
-        `Mode: crossref-only rerun (heuristic, no API key required)`,
         `Requested files: ${uniqueFiles.length > 0 ? uniqueFiles.length : 'all eligible files'}`,
         `Files to process: ${willProcess}`,
         '',
@@ -321,7 +317,7 @@ export async function runReindexTool(runtime: AtlasRuntime, {
     } else {
       lines.push(`  📊 ${needsWork} file${needsWork === 1 ? '' : 's'} need processing`);
     }
-    lines.push('Mode: heuristic, resume-safe (no API key required)');
+    lines.push('Resume-safe — will pick up where it left off if interrupted.');
     if (stats.prunedFiles.length > 0 && stats.prunedFiles.length <= 20) {
       lines.push('', 'Pruned orphans:');
       for (const f of stats.prunedFiles) lines.push(`  • ${f}`);
@@ -421,8 +417,8 @@ export async function runReindexTool(runtime: AtlasRuntime, {
             ? `Crossref rerun started in background: ${crossrefTargetCount} eligible file${crossrefTargetCount === 1 ? '' : 's'}`
             : `Reindex started in background (resume-safe): ${fileCount} total, ${confirmNeedsWork} need processing`,
           requestedPhase === 'crossref'
-            ? 'Mode: crossref-only rerun (heuristic, no API key required)'
-            : 'Mode: heuristic, resume-safe (no API key required)',
+            ? 'Cross-ref rerun only.'
+            : 'Resume-safe — will pick up where it left off if interrupted.',
           `Run atlas_reindex again for live file counts and % progress.`,
           `Atlas context will update when complete.`,
         ].join('\n'),

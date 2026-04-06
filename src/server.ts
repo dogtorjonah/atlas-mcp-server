@@ -182,7 +182,7 @@ async function promptInitWizard(config: import('./types.js').AtlasServerConfig):
     console.log('  ─────────────────────────────────────');
     console.log(`  Codebase:    ${sourceRoot}`);
     console.log(`  Workspace:   ${workspace}`);
-    console.log(`  Mode:        heuristic (no API key needed)`);
+    console.log(`  Pipeline:    deterministic (AST + import graph + cross-refs)`);
     console.log(`  Concurrency: ${concurrency}`);
     console.log('  ─────────────────────────────────────');
     console.log('');

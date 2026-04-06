@@ -551,7 +551,7 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
       source_root: rootDir,
     });
 
-    console.log('[atlas-init] heuristic-only mode — semantic fields will be populated by agents via atlas_commit');
+    console.log('[atlas-init] semantic fields will be populated by agents via atlas_commit');
 
     const scan = await runScan(rootDir, workspace, db, { force: config.force });
     console.log(`[atlas-init] scan: ${scan.files.length} files, ${scan.importEdges.length} edges`);
@@ -622,9 +622,9 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
       failedFiles.add(filePath);
     }
 
-    // No rescue pass in heuristic-only mode — empty semantic fields (blurb,
-    // purpose, patterns, etc.) are expected. They get populated organically via
-    // atlas_commit as agents work with the codebase.
+    // Empty semantic fields (blurb, purpose, patterns, etc.) are expected after
+    // pipeline run. They get populated organically via atlas_commit as agents
+    // work with the codebase.
 
     const finalFailedCount = failedFiles.size;
     console.log(`[atlas-init] final summary: ${scan.files.length - finalFailedCount} succeeded, ${finalFailedCount} failed`);
