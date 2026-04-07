@@ -129,11 +129,31 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       'Atlas indexes start with heuristic-only data (AST symbols, structural edges, cross-references, clusters). Semantic fields begin empty — waiting for YOU to fill them in.',
       'When you see empty fields in an atlas_query lookup, that is your cue: you have the context to fill them. Call atlas_commit after review PASS and before releasing file ownership.',
       '',
-      '## Field Guide — What to Write',
-      '- **purpose**: 1-2 sentences. What this file does and why it exists. ("Core database layer — opens SQLite, runs migrations, exposes typed query helpers.")',
+      '## CRITICAL: Identity vs. Changelog — Two Separate Things',
+      '',
+      'This tool has TWO distinct sections. Do NOT mix them up:',
+      '',
+      '**`changelog_entry`** (required) — What you CHANGED and why. This is your edit log.',
+      '  Example: "Added routing branch for clinical_insights sectionTarget alongside existing discharge and generic targets."',
+      '',
+      '**Metadata fields** (purpose, blurb, patterns, hazards, etc.) — The file\'s PERMANENT IDENTITY. What the file IS, not what you did to it.',
+      '  These describe the file as if no change ever happened — a timeless description that will be true tomorrow, next month, and next year.',
+      '',
+      '### BAD (changelog text leaking into metadata):',
+      '  - purpose: "Updated to add clinical insights routing" — NO! This is a changelog entry.',
+      '  - blurb: "Now exposes submitClinicalInsightsJob()" — NO! "Now" = temporal = changelog.',
+      '  - hazards: "Task 3753 investigation confirmed fields already support X" — NO! This is investigation notes.',
+      '',
+      '### GOOD (timeless identity):',
+      '  - purpose: "Routes incoming generation jobs to the correct processor based on document type and section target."',
+      '  - blurb: "Job generation router dispatching to section-specific processors"',
+      '  - hazards: "Adding a new sectionTarget requires a matching processor import and routing branch"',
+      '',
+      '## Field Guide — What to Write (File Identity)',
+      '- **purpose**: 1-2 sentences. What this file does and why it exists. Timeless. ("Core database layer — opens SQLite, runs migrations, exposes typed query helpers.")',
       '- **blurb**: Tweet-length, under 80 chars. Used in compact neighbor listings and search results. ("SQLite database layer with migration runner and typed queries")',
       '- **patterns**: Architectural patterns — facade, middleware chain, observer, singleton, builder, registry, etc. Not code style.',
-      '- **hazards**: Correctness risks — race conditions, silent failures, mutation traps, ordering dependencies, implicit coupling. Not style nits or TODOs.',
+      '- **hazards**: Correctness risks — race conditions, silent failures, mutation traps, ordering dependencies, implicit coupling. Not style nits, TODOs, or investigation notes.',
       '- **conventions**: Project-specific conventions this file follows or establishes — naming schemes, error handling patterns, import ordering, test structure.',
       '- **key_types**: Important type definitions, interfaces, or enums that downstream consumers depend on.',
       '- **data_flows**: How data moves through this file — inputs, transformations, outputs, side effects.',
@@ -144,12 +164,15 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       'The more agents commit knowledge, the richer the Atlas becomes. The most-touched files accumulate the best metadata — exactly the right priority.',
       '',
       '## Changelog — Built In (No Separate Call Needed)',
-      'atlas_commit IS the changelog. Every call automatically creates a changelog entry. Include `patterns_added`, `patterns_removed`, `hazards_added`, `hazards_removed` to record what changed — this is what `atlas_changelog action=query` returns. You do NOT need a separate `atlas_changelog action=log` call.',
+      'The `changelog_entry` field IS the changelog. Every call automatically creates a changelog entry from it. Include `patterns_added`, `patterns_removed`, `hazards_added`, `hazards_removed` to record what changed — this is what `atlas_changelog action=query` returns. You do NOT need a separate `atlas_changelog action=log` call.',
     ].join('\n'),
     {
-      // ── Changelog fields (same as atlas_log) ──
+      // ── Changelog fields ──
       file_path: z.string().min(1),
-      summary: z.string().min(1),
+      changelog_entry: z.string().min(1).describe(
+        'What you changed and why (1-2 sentences). This becomes the changelog entry visible under "Recent Changes" in atlas_query lookups. Describe YOUR EDIT, not the file itself — use purpose/blurb for file identity.',
+      ),
+      summary: z.string().min(1).optional().describe('Deprecated alias for changelog_entry. Use changelog_entry instead.'),
       patterns_added: z.array(z.string()).optional(),
       patterns_removed: z.array(z.string()).optional(),
       hazards_added: z.array(z.string()).optional(),
@@ -177,7 +200,8 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
     },
     async ({
       file_path,
-      summary,
+      changelog_entry,
+      summary: summaryLegacy,
       patterns_added,
       patterns_removed,
       hazards_added,
@@ -201,7 +225,8 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       source_highlights,
     }: {
       file_path: string;
-      summary: string;
+      changelog_entry?: string;
+      summary?: string;
       patterns_added?: string[];
       patterns_removed?: string[];
       hazards_added?: string[];
@@ -223,6 +248,14 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       blurb?: string;
       source_highlights?: Array<{ id: number; label?: string; startLine: number; endLine: number; content: string }>;
     }) => {
+      // Resolve changelog_entry vs legacy summary — changelog_entry takes precedence
+      const summary = changelog_entry ?? summaryLegacy;
+      if (!summary || summary.trim().length === 0) {
+        throw new Error(
+          'atlas_commit requires a changelog_entry describing what you changed and why. This is your edit log, not a file description.',
+        );
+      }
+
       const hasInlineUpdate = purpose !== undefined
         || public_api !== undefined
         || conventions !== undefined
@@ -342,7 +375,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         // ── Step 4: Build response ─────────────────────────────────────────
         const parts = [
           `Atlas commit #${entry.id} for ${file_path}`,
-          `Summary: ${entry.summary}`,
+          `Changelog: ${entry.summary}`,
         ];
 
         if (entry.patterns_added.length > 0) {
