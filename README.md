@@ -43,11 +43,11 @@ This eliminates the duplicate collision waste seen during wide atlas enrichment 
 
 ### AI-Curated Source Highlights
 
-Instead of naively truncating source code at a line limit, agents curate the most important code sections during `atlas_commit`. Each highlight is a numbered, labeled snippet that can represent disjointed segments from anywhere in the file.
+Agents can curate the most important code sections during `atlas_commit`. Each highlight is a numbered, labeled snippet that can represent disjointed segments from anywhere in the file.
 
 For a 2000-line file, an agent might select 3 key segments — the main export, the error handling, and the config parsing — skipping boilerplate entirely. Changelog entries can reference snippets by number ("refer to snippet 5").
 
-When curated highlights exist, `atlas_query action=lookup` shows those instead of raw source. When no highlights exist yet, it falls back to adaptive raw source display (more code when metadata is sparse, less when metadata tells the story).
+`atlas_query action=lookup` always includes the full source code. When curated highlights exist, it also shows them as guideposts that call out the most important sections without replacing the full file.
 
 ## Search
 

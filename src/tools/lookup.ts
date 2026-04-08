@@ -221,17 +221,16 @@ export async function runLookupTool(runtime: AtlasRuntime, { filePath, workspace
     if (callers.length > 20) lines.push(`  ... and ${callers.length - 20} more`);
   }
 
-  // ── Source code: curated snippets first, raw source as fallback ──
+  // ── Source code: always include full source; curated snippets are optional guideposts ──
   const shouldIncludeSource = includeSource !== false;
   const highlights = row.source_highlights ?? [];
 
   if (shouldIncludeSource && highlights.length > 0) {
-    // AI-curated snippets exist — show those instead of raw source
     const sourceLines = sourceFile?.content.split('\n');
     const totalLines = sourceLines?.length ?? row.loc;
     lines.push('');
     lines.push(`## Source Highlights (${highlights.length} curated snippet${highlights.length === 1 ? '' : 's'} from ${totalLines} lines)`);
-    lines.push('These snippets were selected by an agent as the most important sections of this file.');
+    lines.push('These snippets were selected by an agent as guideposts for the most important sections of this file.');
     lines.push('');
     for (const snippet of highlights) {
       const label = snippet.label ? ` — ${snippet.label}` : '';
@@ -241,36 +240,17 @@ export async function runLookupTool(runtime: AtlasRuntime, { filePath, workspace
       lines.push('```');
       lines.push('');
     }
-    lines.push(`Use the Read tool to see the full file (${totalLines} lines).`);
-  } else if (shouldIncludeSource && sourceFile) {
-    // No curated snippets — fall back to raw source with adaptive truncation.
-    // When metadata is sparse, show more source (agents need the code context).
-    // As metadata grows via atlas_commit, source can be truncated more aggressively.
+  }
+
+  if (shouldIncludeSource && sourceFile) {
     const sourceLines = sourceFile.content.split('\n');
-
-    const metadataRichness = [
-      row.purpose,
-      row.blurb,
-      ...(row.patterns ?? []),
-      ...(row.hazards ?? []),
-      ...(row.conventions ?? []),
-    ].filter((s) => typeof s === 'string' && s.trim().length > 0).length;
-
-    // Adaptive cap: empty metadata → 500 lines, rich metadata → 200 lines
-    const MAX_SOURCE_LINES = metadataRichness >= 5 ? 200 : metadataRichness >= 2 ? 350 : 500;
-
-    const truncated = sourceLines.length > MAX_SOURCE_LINES;
-    const displayLines = truncated ? sourceLines.slice(0, MAX_SOURCE_LINES) : sourceLines;
     lines.push('');
-    lines.push(`## Source (${sourceLines.length} lines${truncated ? `, showing first ${MAX_SOURCE_LINES}` : ''})`);
+    lines.push(`## Source (${sourceLines.length} lines)`);
     lines.push('```');
-    lines.push(displayLines.join('\n'));
+    lines.push(sourceLines.join('\n'));
     lines.push('```');
-    if (truncated) {
-      lines.push(`\n... ${sourceLines.length - MAX_SOURCE_LINES} more lines. Use the Read tool to see the full file.`);
-    }
-    if (metadataRichness === 0) {
-      lines.push('\n💡 This file has no curated metadata yet. Run `atlas_commit` with `source_highlights` to select the most important code sections — future lookups will show your curated snippets instead of raw truncation.');
+    if (highlights.length === 0) {
+      lines.push('\n💡 This file has no curated source highlights yet. Run `atlas_commit` with `source_highlights` to add guidepost snippets for future lookups.');
     }
   }
 
@@ -285,7 +265,7 @@ export async function runLookupTool(runtime: AtlasRuntime, { filePath, workspace
 export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_lookup',
-    'Get the full structured extraction for a specific file. Returns: purpose, public API, patterns, dependencies, data flows, key types, hazards, conventions, and cross-references. Includes staleness check — warns if the file changed since last extraction. Use before editing a file.',
+    'Get the full structured extraction for a specific file. Returns: purpose, public API, patterns, dependencies, data flows, key types, hazards, conventions, cross-references, and the full source code by default. Includes staleness check — warns if the file changed since last extraction. Use before editing a file.',
     {
       filePath: z.string().min(1),
       workspace: z.string().optional(),
