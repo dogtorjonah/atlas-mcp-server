@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { AtlasCrossRefSymbol, AtlasFileRecord, AtlasRuntime } from '../types.js';
+import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
 import type { AtlasDatabase, AtlasReferenceRecord } from '../db.js';
 import { listAtlasFiles, listImportEdges, listReferences, queryAtlasChangelog } from '../db.js';
 import { discoverWorkspaces } from './bridge.js';
@@ -31,7 +31,6 @@ interface GapFinding {
   gapType: GapType;
   filePath: string;
   subject: string;
-  confidence: number;
   evidence: string[];
   note?: string;
 }
@@ -224,10 +223,6 @@ function aggregateReferenceUsage(
   return usage;
 }
 
-function clampConfidence(value: number): number {
-  return Math.max(0.1, Math.min(0.99, Number(value.toFixed(2))));
-}
-
 function getScopeFiles(
   db: AtlasDatabase,
   workspace: string,
@@ -357,33 +352,6 @@ function extractLoadedSymbols(dataFlows: string[]): Array<{ symbol: string; flow
     if (!existing || (!existing.strong && item.strong)) dedup.set(item.symbol, item);
   }
   return [...dedup.values()];
-}
-
-function scoreLoadedNotUsed(
-  symbol: string,
-  sourceRow: AtlasFileRecord,
-  downstreamCount: number,
-  strongExtraction: boolean,
-): number {
-  let score = 0.55;
-  if (strongExtraction) score += 0.2;
-  if (sourceRow.exports.some((entry) => entry.name === symbol)) score += 0.05;
-  if (downstreamCount > 0) score += 0.1;
-  return clampConfidence(score);
-}
-
-function scoreExportedNotReferenced(symbolData: AtlasCrossRefSymbol | undefined): number {
-  if (!symbolData) return 0.6;
-  if (symbolData.total_usages > 0) return 0.1;
-  if ((symbolData.call_sites?.length ?? 0) > 0) return 0.4;
-  return 0.8;
-}
-
-function scoreImportedNotUsed(symbolCandidates: string[], sideEffectLikely: boolean): number {
-  let score = 0.62;
-  if (symbolCandidates.length >= 3) score += 0.08;
-  if (sideEffectLikely) score -= 0.2;
-  return clampConfidence(score);
 }
 
 function normalizePackageName(specifier: string): string {
@@ -530,8 +498,8 @@ async function collectImportedPackages(sourceRoot: string, files: AtlasFileRecor
 
 function formatFinding(finding: GapFinding): string {
   const evidence = finding.evidence.join(' | ');
-  const note = finding.note ? ` | Note: ${finding.note}` : '';
-  return `- \`${finding.subject}\` — ${evidence}\n  Confidence: ${finding.confidence}${note}`;
+  const note = finding.note ? `\n  Note: ${finding.note}` : '';
+  return `- \`${finding.subject}\` — ${evidence}${note}`;
 }
 
 async function runGapsAction(
@@ -578,7 +546,6 @@ async function runGapsAction(
           gapType: 'loaded_not_used',
           filePath: file.file_path,
           subject: symbol,
-          confidence: scoreLoadedNotUsed(symbol, file, downstreamRows.length, symbolEntry.strong),
           evidence: [
             `data_flows mentions "${symbolEntry.flow}"`,
             `0 references across ${downstreamRows.length} downstream files`,
@@ -600,7 +567,6 @@ async function runGapsAction(
           gapType: 'exported_not_referenced',
           filePath: file.file_path,
           subject: symbol,
-          confidence: clampConfidence(scoreExportedNotReferenced(direct)),
           evidence: [
             `export "${symbol}" has 0 call_sites`,
             'symbol not found in workspace cross_refs contexts',
@@ -653,15 +619,10 @@ async function runGapsAction(
       if (usedAnyIdentifier || usedAnyTargetSymbol) continue;
 
       const sideEffectLikely = sideEffectImportOnly || symbolCandidates.size === 0;
-      const confidence = sideEffectLikely
-        ? clampConfidence(scoreImportedNotUsed([...symbolCandidates], sideEffectLikely) - 0.22)
-        : scoreImportedNotUsed([...symbolCandidates], sideEffectLikely);
-
       findings.push({
         gapType: 'imported_not_used',
         filePath: edge.source_file,
         subject: edge.target_file,
-        confidence,
         evidence: [
           `import edge exists: ${edge.source_file} -> ${edge.target_file}`,
           'import bindings found but no local usage in source body',
@@ -684,7 +645,6 @@ async function runGapsAction(
           gapType: 'installed_not_imported',
           filePath: 'package.json',
           subject: dependency,
-          confidence: 0.9,
           evidence: [
             'dependency declared in package.json',
             'no import/require usage found across atlas-indexed source files',
@@ -696,7 +656,6 @@ async function runGapsAction(
         gapType: 'installed_not_imported',
         filePath: 'package.json',
         subject: '(unreadable package.json)',
-        confidence: 0.2,
         evidence: ['failed to parse package.json; skipped dependency gap check'],
       });
     }
@@ -725,17 +684,12 @@ async function runGapsAction(
 
       if (missing.length === 0) continue;
 
-      // Score based on how many fields are missing — more missing = higher confidence it's truly incomplete
-      const totalChecked = 8; // blurb, purpose, extraction, cross_refs, hazards, conventions, key_types, data_flows
-      const missingRatio = missing.length / totalChecked;
-      // Files missing most fields (scaffold-only) get high confidence; files missing 1-2 get lower
-      const confidence = clampConfidence(0.4 + missingRatio * 0.55);
+      const totalChecked = 8;
 
       findings.push({
         gapType: 'incomplete_atlas_entry',
         filePath: file.file_path,
         subject: file.file_path,
-        confidence,
         evidence: [
           `missing: ${missing.join(', ')}`,
           `${missing.length}/${totalChecked} metadata fields empty`,

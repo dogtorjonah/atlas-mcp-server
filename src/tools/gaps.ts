@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { AtlasCrossRefSymbol, AtlasFileRecord, AtlasRuntime } from '../types.js';
+import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
 import type { AtlasDatabase } from '../db.js';
 import { listAtlasFiles, listImportEdges } from '../db.js';
 import { discoverWorkspaces } from './bridge.js';
@@ -27,7 +27,6 @@ interface GapFinding {
   gapType: GapType;
   filePath: string;
   subject: string;
-  confidence: number;
   evidence: string[];
   note?: string;
 }
@@ -72,10 +71,6 @@ function resolveWorkspace(runtime: AtlasRuntime, workspace?: string): WorkspaceR
     sourceRoot: target.sourceRoot,
     workspace: target.workspace,
   };
-}
-
-function clampConfidence(value: number): number {
-  return Math.max(0.1, Math.min(0.99, Number(value.toFixed(2))));
 }
 
 function getScopeFiles(
@@ -219,33 +214,6 @@ function extractLoadedSymbols(dataFlows: string[]): Array<{ symbol: string; flow
     }
   }
   return [...dedup.values()];
-}
-
-function scoreLoadedNotUsed(
-  symbol: string,
-  sourceRow: AtlasFileRecord,
-  downstreamCount: number,
-  strongExtraction: boolean,
-): number {
-  let score = 0.55;
-  if (strongExtraction) score += 0.2;
-  if (sourceRow.exports.some((entry) => entry.name === symbol)) score += 0.05;
-  if (downstreamCount > 0) score += 0.1;
-  return clampConfidence(score);
-}
-
-function scoreExportedNotReferenced(symbolData: AtlasCrossRefSymbol | undefined): number {
-  if (!symbolData) return 0.6;
-  if (symbolData.total_usages > 0) return 0.1;
-  if ((symbolData.call_sites?.length ?? 0) > 0) return 0.4;
-  return 0.8;
-}
-
-function scoreImportedNotUsed(symbolCandidates: string[], sideEffectLikely: boolean): number {
-  let score = 0.62;
-  if (symbolCandidates.length >= 3) score += 0.08;
-  if (sideEffectLikely) score -= 0.2;
-  return clampConfidence(score);
 }
 
 function normalizePackageName(specifier: string): string {
@@ -396,14 +364,14 @@ async function collectImportedPackages(sourceRoot: string, files: AtlasFileRecor
 
 function formatFinding(finding: GapFinding): string {
   const evidence = finding.evidence.join(' | ');
-  const note = finding.note ? ` | Note: ${finding.note}` : '';
-  return `- \`${finding.subject}\` — ${evidence}\n  Confidence: ${finding.confidence}${note}`;
+  const note = finding.note ? `\n  Note: ${finding.note}` : '';
+  return `- \`${finding.subject}\` — ${evidence}${note}`;
 }
 
 export function registerGapsTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_gaps',
-    'Detect structural gaps in the codebase: dead exports no one imports, unused imports, loaded-but-unused data, installed-but-never-imported packages, and incomplete atlas entries with missing metadata (blurb, purpose, cross_refs, hazards, etc.). Can scope to a single file or cluster. Returns findings with confidence scores. Use during cleanup or before refactoring.',
+    'Detect structural gaps in the codebase: dead exports no one imports, unused imports, loaded-but-unused data, installed-but-never-imported packages, and incomplete atlas entries with missing metadata (blurb, purpose, cross_refs, hazards, etc.). Can scope to a single file or cluster. Use during cleanup or before refactoring.',
     {
       filePath: z.string().min(1).optional(),
       cluster: z.string().min(1).optional(),
@@ -467,7 +435,6 @@ export function registerGapsTool(server: McpServer, runtime: AtlasRuntime): void
               gapType: 'loaded_not_used',
               filePath: file.file_path,
               subject: symbol,
-              confidence: scoreLoadedNotUsed(symbol, file, downstreamRows.length, symbolEntry.strong),
               evidence: [
                 `data_flows mentions "${symbolEntry.flow}"`,
                 `0 references across ${downstreamRows.length} downstream files`,
@@ -491,7 +458,6 @@ export function registerGapsTool(server: McpServer, runtime: AtlasRuntime): void
               gapType: 'exported_not_referenced',
               filePath: file.file_path,
               subject: symbol,
-              confidence: clampConfidence(scoreExportedNotReferenced(direct)),
               evidence: [
                 `export "${symbol}" has 0 call_sites`,
                 'symbol not found in workspace cross_refs contexts',
@@ -552,14 +518,10 @@ export function registerGapsTool(server: McpServer, runtime: AtlasRuntime): void
           if (usedAny) continue;
 
           const sideEffectLikely = sideEffectImportOnly || symbolCandidates.size === 0;
-          const confidence = sideEffectLikely
-            ? clampConfidence(scoreImportedNotUsed([...symbolCandidates], sideEffectLikely) - 0.22)
-            : scoreImportedNotUsed([...symbolCandidates], sideEffectLikely);
           findings.push({
             gapType: 'imported_not_used',
             filePath: edge.source_file,
             subject: edge.target_file,
-            confidence,
             evidence: [
               `import edge exists: ${edge.source_file} -> ${edge.target_file}`,
               `import bindings found but no local usage in source body`,
@@ -587,7 +549,6 @@ export function registerGapsTool(server: McpServer, runtime: AtlasRuntime): void
               gapType: 'installed_not_imported',
               filePath: 'package.json',
               subject: dependency,
-              confidence: 0.9,
               evidence: [
                 'dependency declared in package.json',
                 'no import/require usage found across atlas-indexed source files',
@@ -599,7 +560,6 @@ export function registerGapsTool(server: McpServer, runtime: AtlasRuntime): void
             gapType: 'installed_not_imported',
             filePath: 'package.json',
             subject: '(unreadable package.json)',
-            confidence: 0.2,
             evidence: ['failed to parse package.json; skipped dependency gap check'],
           });
         }
@@ -626,14 +586,11 @@ export function registerGapsTool(server: McpServer, runtime: AtlasRuntime): void
           if (missing.length === 0) continue;
 
           const totalChecked = 8;
-          const missingRatio = missing.length / totalChecked;
-          const confidence = clampConfidence(0.4 + missingRatio * 0.55);
 
           findings.push({
             gapType: 'incomplete_atlas_entry',
             filePath: file.file_path,
             subject: file.file_path,
-            confidence,
             evidence: [
               `missing: ${missing.join(', ')}`,
               `${missing.length}/${totalChecked} metadata fields empty`,
