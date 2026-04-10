@@ -22,6 +22,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -41,6 +42,34 @@ function computeCurrentFileHash(filePath: string, sourceRoot: string): string | 
     const absPath = path.isAbsolute(filePath) ? filePath : path.join(sourceRoot, filePath);
     const content = fs.readFileSync(absPath, 'utf8');
     return createHash('sha1').update(content).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Auto-capture the latest git commit SHA that touched a specific file.
+ * Falls back to HEAD if file-specific lookup fails, returns null if not in a git repo.
+ */
+function resolveCommitSha(filePath: string, sourceRoot: string): string | null {
+  try {
+    // Get the latest commit that touched this specific file
+    const sha = execSync(`git log -1 --format=%H -- ${JSON.stringify(filePath)}`, {
+      cwd: sourceRoot,
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    if (sha && /^[0-9a-f]{40}$/.test(sha)) return sha;
+
+    // Fallback: just use HEAD
+    const head = execSync('git rev-parse HEAD', {
+      cwd: sourceRoot,
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    return /^[0-9a-f]{40}$/.test(head) ? head : null;
   } catch {
     return null;
   }
@@ -183,6 +212,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       author_instance_id: z.string().optional(),
       author_engine: z.string().optional(),
       review_entry_id: z.string().optional(),
+      quiet: z.boolean().optional().describe('Controls response verbosity (default true — compact one-line response). Set false to get verbose feedback with coverage warnings, changelog hints, and flush reminders.'),
 
       // ── Inline atlas_files update fields (NEW) ──
       purpose: z.string().optional(),
@@ -223,6 +253,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       dependencies,
       blurb,
       source_highlights,
+      quiet,
     }: {
       file_path: string;
       changelog_entry?: string;
@@ -237,6 +268,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       author_instance_id?: string;
       author_engine?: string;
       review_entry_id?: string;
+      quiet?: boolean;
       purpose?: string;
       public_api?: Array<{ name: string; type: string; signature?: string; description?: string }>;
       conventions?: string[];
@@ -295,6 +327,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
 
       try {
         // ── Step 1: Write changelog entry ──────────────────────────────────
+        const resolvedSha = commit_sha ?? resolveCommitSha(file_path, runtime.config.sourceRoot);
         const entry = insertAtlasChangelog(runtime.db, {
           workspace: runtime.config.workspace,
           file_path,
@@ -305,7 +338,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
           hazards_removed,
           cluster: cluster ?? null,
           breaking_changes,
-          commit_sha: commit_sha ?? null,
+          commit_sha: resolvedSha,
           author_instance_id: author_instance_id ?? null,
           author_engine: author_engine ?? null,
           review_entry_id: review_entry_id ?? null,
@@ -373,6 +406,29 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         const coveragePct = Math.round((filledCount / totalFields) * 100);
 
         // ── Step 4: Build response ─────────────────────────────────────────
+        // Quiet mode (default): single compact line saves ~500-1K tokens per commit.
+        // Pass quiet=false for verbose feedback with coverage warnings and changelog hints.
+        if (quiet !== false) {
+          const fieldList = [
+            purpose !== undefined && 'purpose',
+            blurb !== undefined && 'blurb',
+            patterns !== undefined && 'patterns',
+            hazards !== undefined && 'hazards',
+            conventions !== undefined && 'conventions',
+            key_types !== undefined && 'key_types',
+            data_flows !== undefined && 'data_flows',
+            public_api !== undefined && 'public_api',
+            source_highlights !== undefined && 'source_highlights',
+            dependencies !== undefined && 'dependencies',
+          ].filter(Boolean).join(', ');
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `✅ #${entry.id} ${file_path} — ${filledCount}/${totalFields} (${coveragePct}%) [${fieldList}]${stillEmpty.length > 0 ? ` | empty: ${stillEmpty.join(', ')}` : ''}`,
+            }],
+          };
+        }
+
         const parts = [
           `Atlas commit #${entry.id} for ${file_path}`,
           `Changelog: ${entry.summary}`,

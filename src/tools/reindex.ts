@@ -14,6 +14,7 @@ const activeReindexes = new Map<string, Promise<void>>();
 const reindexStartedAt = new Map<string, Date>();
 const reindexFileCount = new Map<string, number>();
 const reindexMode = new Map<string, 'full' | 'crossref'>();
+const reindexPid = process.pid;
 
 // Track last-completed reindex so status checks after a fast run don't
 // fall through to the dry-run path with no indication it already ran.
@@ -224,7 +225,7 @@ export async function runReindexTool(runtime: AtlasRuntime, {
           content: [{
             type: 'text',
             text: [
-              `${activeMode === 'crossref' ? 'Crossref rerun' : 'Reindex'} in progress: ${buildPercentBar(overallPercent)} ${overallPercent}%, running for ${elapsed}s`,
+              `${activeMode === 'crossref' ? 'Crossref rerun' : 'Reindex'} in progress (pid ${reindexPid}): ${buildPercentBar(overallPercent)} ${overallPercent}%, running for ${elapsed}s`,
               `Phase: ${currentLabel} (${current?.processed ?? 0}/${current?.total ?? 0}, ${currentPercent})`,
               `Target files in current phase: ${current?.total ?? reindexFileCount.get(activeWorkspace) ?? '?'}`,
               `Atlas context will update when complete.`,
@@ -236,7 +237,7 @@ export async function runReindexTool(runtime: AtlasRuntime, {
         content: [{
           type: 'text',
           text: [
-            `${activeMode === 'crossref' ? 'Crossref rerun' : 'Reindex'} in progress: ${reindexFileCount.get(activeWorkspace) ?? '?'} files, running for ${elapsed}s`,
+            `${activeMode === 'crossref' ? 'Crossref rerun' : 'Reindex'} in progress (pid ${reindexPid}): ${reindexFileCount.get(activeWorkspace) ?? '?'} files, running for ${elapsed}s`,
             `Atlas context will update when complete.`,
           ].join('\n'),
         }],
@@ -344,7 +345,7 @@ export async function runReindexTool(runtime: AtlasRuntime, {
   // ── Mode: full pipeline ──
   if (activeReindexes.has(activeWorkspace)) {
     return {
-      content: [{ type: 'text', text: 'A reindex is already in progress.' }],
+      content: [{ type: 'text', text: `A reindex is already in progress (pid ${reindexPid}).` }],
     };
   }
 
@@ -414,8 +415,8 @@ export async function runReindexTool(runtime: AtlasRuntime, {
         type: 'text',
         text: [
           requestedPhase === 'crossref'
-            ? `Crossref rerun started in background: ${crossrefTargetCount} eligible file${crossrefTargetCount === 1 ? '' : 's'}`
-            : `Reindex started in background (resume-safe): ${fileCount} total, ${confirmNeedsWork} need processing`,
+            ? `Crossref rerun started in background (pid ${reindexPid}): ${crossrefTargetCount} eligible file${crossrefTargetCount === 1 ? '' : 's'}`
+            : `Reindex started in background (pid ${reindexPid}, resume-safe): ${fileCount} total, ${confirmNeedsWork} need processing`,
           requestedPhase === 'crossref'
             ? 'Cross-ref rerun only.'
             : 'Resume-safe — will pick up where it left off if interrupted.',

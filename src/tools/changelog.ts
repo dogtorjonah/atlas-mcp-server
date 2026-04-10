@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
@@ -84,8 +85,32 @@ function matchesFilters(
   return true;
 }
 
-function formatEntry(entry: AtlasChangelogRecord): string {
-  return [
+/**
+ * Retrieve the git diff for a specific file at a given commit.
+ * Returns the diff output or null if unavailable.
+ */
+function getGitDiff(sourceRoot: string, commitSha: string, filePath: string): string | null {
+  try {
+    // Show the diff introduced by this commit for this specific file
+    const diff = execSync(
+      `git show ${commitSha} -- ${JSON.stringify(filePath)}`,
+      {
+        cwd: sourceRoot,
+        encoding: 'utf8',
+        timeout: 10_000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        maxBuffer: 512 * 1024, // 512KB max — avoid blowing up on huge diffs
+      },
+    ).trim();
+    return diff || null;
+  } catch {
+    // Commit may no longer exist (rebased away), or not a git repo
+    return null;
+  }
+}
+
+function formatEntry(entry: AtlasChangelogRecord, diff?: string | null): string {
+  const lines = [
     `# ${entry.file_path}`,
     `- id: ${entry.id}`,
     `- created_at: ${entry.created_at}`,
@@ -103,7 +128,17 @@ function formatEntry(entry: AtlasChangelogRecord): string {
     `- hazards_added: ${formatStringList(entry.hazards_added)}`,
     `- hazards_removed: ${formatStringList(entry.hazards_removed)}`,
     `- verification_notes: ${entry.verification_notes ?? '(none)'}`,
-  ].join('\n');
+  ];
+
+  if (diff) {
+    lines.push('');
+    lines.push('## Diff');
+    lines.push('```diff');
+    lines.push(diff);
+    lines.push('```');
+  }
+
+  return lines.join('\n');
 }
 
 // ── Query action handler ──
@@ -118,6 +153,7 @@ async function handleQuery(runtime: AtlasRuntime, args: Record<string, unknown>)
   const breaking_only = args.breaking_only as boolean | undefined;
   const limit = args.limit as number | undefined;
   const workspace = args.workspace as string | undefined;
+  const include_diff = args.include_diff as boolean | undefined;
 
   const activeWorkspace = workspace ?? runtime.config.workspace;
   const maxResults = Math.max(1, Math.min(limit ?? 20, 100));
@@ -153,12 +189,21 @@ async function handleQuery(runtime: AtlasRuntime, args: Record<string, unknown>)
     [...new Set(entries.map((entry) => entry.file_path))],
   );
 
+  // Resolve diffs when requested — only for entries that have a commit_sha
+  const formattedEntries = entries.map((entry) => {
+    let diff: string | null = null;
+    if (include_diff && entry.commit_sha) {
+      diff = getGitDiff(runtime.config.sourceRoot, entry.commit_sha, entry.file_path);
+    }
+    return formatEntry(entry, diff);
+  });
+
   return {
     content: [{
       type: 'text' as const,
       text: entries.length === 0
         ? 'No atlas changelog entries matched.'
-        : entries.map(formatEntry).join('\n\n'),
+        : formattedEntries.join('\n\n'),
     }],
   };
 }
@@ -179,6 +224,7 @@ export function registerChangelogTools(server: McpServer, runtime: AtlasRuntime)
       until: z.string().optional().describe('ISO date — only entries before this date'),
       verification_status: z.string().optional().describe('Filter by verification status'),
       breaking_only: z.boolean().optional().describe('If true, only return entries with breaking changes'),
+      include_diff: z.boolean().optional().describe('If true, include the git diff for each entry that has a commit_sha. Shows exactly what code changed.'),
       limit: z.number().int().min(1).max(100).optional().describe('Max results (default 20, max 100)'),
       workspace: z.string().optional().describe('Override workspace (defaults to current)'),
     },

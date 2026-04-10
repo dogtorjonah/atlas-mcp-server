@@ -57,6 +57,41 @@ function formatChangelogRow(row: ChangelogRow, index: number): string {
   return lines;
 }
 
+function toTrimmedText(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return null;
+}
+
+function formatKeyTypeEntry(entry: unknown): string | null {
+  const direct = toTrimmedText(entry);
+  if (direct) return direct;
+  if (!entry || typeof entry !== 'object') return null;
+
+  const record = entry as Record<string, unknown>;
+  const name = toTrimmedText(record.name ?? record.symbol ?? record.id ?? record.title);
+  const kind = toTrimmedText(record.kind ?? record.type ?? record.category);
+  const description = toTrimmedText(record.description ?? record.summary);
+  const exported = record.exported === true ? 'exported' : null;
+
+  if (name && kind) {
+    const modifiers = [exported].filter(Boolean).join(', ');
+    return `\`${name}\` (${[kind, modifiers].filter(Boolean).join(', ')})${description ? ` — ${description}` : ''}`;
+  }
+  if (name) {
+    return description ? `\`${name}\` — ${description}` : `\`${name}\``;
+  }
+  if (kind) {
+    return description ? `${kind} — ${description}` : kind;
+  }
+  return description;
+}
+
 async function readSourceFile(sourceRoot: string, filePath: string): Promise<{ hash: string; content: string } | null> {
   try {
     const content = await fs.readFile(path.join(sourceRoot, filePath), 'utf8');
@@ -79,13 +114,15 @@ export interface AtlasLookupArgs {
   filePath: string;
   workspace?: string;
   includeSource?: boolean;
+  includeNeighbors?: boolean;
+  includeCrossRefs?: boolean;
 }
 
 type AtlasToolTextResult = {
   content: Array<{ type: 'text'; text: string }>;
 };
 
-export async function runLookupTool(runtime: AtlasRuntime, { filePath, workspace, includeSource }: AtlasLookupArgs): Promise<AtlasToolTextResult> {
+export async function runLookupTool(runtime: AtlasRuntime, { filePath, workspace, includeSource, includeNeighbors, includeCrossRefs }: AtlasLookupArgs): Promise<AtlasToolTextResult> {
   const ws = workspace ?? runtime.config.workspace;
 
   // Resolve DB and sourceRoot — local workspace or cross-workspace via bridge discovery
@@ -177,12 +214,15 @@ export async function runLookupTool(runtime: AtlasRuntime, { filePath, workspace
   if (Array.isArray(row.key_types) && row.key_types.length > 0) {
     lines.push('');
     lines.push('## Key Types');
-    for (const t of (row.key_types as Array<{ name?: string; kind?: string; exported?: boolean; description?: string }>).slice(0, 20)) {
-      lines.push(`- \`${t.name}\` (${t.kind ?? '?'}${t.exported ? ', exported' : ''})${t.description ? ` — ${t.description}` : ''}`);
+    for (const t of row.key_types.slice(0, 20)) {
+      const rendered = formatKeyTypeEntry(t);
+      if (rendered) {
+        lines.push(`- ${rendered}`);
+      }
     }
   }
 
-  if (row.cross_refs?.symbols) {
+  if (includeCrossRefs === true && row.cross_refs?.symbols) {
     const syms = Object.entries(row.cross_refs.symbols);
     if (syms.length > 0) {
       const totalRefs = row.cross_refs.total_cross_references ?? 0;
@@ -197,28 +237,30 @@ export async function runLookupTool(runtime: AtlasRuntime, { filePath, workspace
     }
   }
 
-  // Neighborhood — import graph proximity
-  const imports = listImports(db, ws, filePath);
-  const callers = listImportedBy(db, ws, filePath);
+  // Neighborhood — import graph proximity (off by default to save tokens; use atlas_graph for topology)
+  if (includeNeighbors === true) {
+    const imports = listImports(db, ws, filePath);
+    const callers = listImportedBy(db, ws, filePath);
 
-  if (imports.length > 0) {
-    lines.push('');
-    lines.push(`## Imports (${imports.length} direct dependencies)`);
-    for (const imp of imports.slice(0, 20)) {
-      const neighbor = getAtlasFile(db, ws, imp);
-      lines.push(formatNeighborBlurb(imp, neighbor?.blurb || neighbor?.purpose, neighbor?.key_types));
+    if (imports.length > 0) {
+      lines.push('');
+      lines.push(`## Imports (${imports.length} direct dependencies)`);
+      for (const imp of imports.slice(0, 20)) {
+        const neighbor = getAtlasFile(db, ws, imp);
+        lines.push(formatNeighborBlurb(imp, neighbor?.blurb || neighbor?.purpose, neighbor?.key_types));
+      }
+      if (imports.length > 20) lines.push(`  ... and ${imports.length - 20} more`);
     }
-    if (imports.length > 20) lines.push(`  ... and ${imports.length - 20} more`);
-  }
 
-  if (callers.length > 0) {
-    lines.push('');
-    lines.push(`## Callers (${callers.length} files import this)`);
-    for (const caller of callers.slice(0, 20)) {
-      const neighbor = getAtlasFile(db, ws, caller);
-      lines.push(formatNeighborBlurb(caller, neighbor?.blurb || neighbor?.purpose));
+    if (callers.length > 0) {
+      lines.push('');
+      lines.push(`## Callers (${callers.length} files import this)`);
+      for (const caller of callers.slice(0, 20)) {
+        const neighbor = getAtlasFile(db, ws, caller);
+        lines.push(formatNeighborBlurb(caller, neighbor?.blurb || neighbor?.purpose));
+      }
+      if (callers.length > 20) lines.push(`  ... and ${callers.length - 20} more`);
     }
-    if (callers.length > 20) lines.push(`  ... and ${callers.length - 20} more`);
   }
 
   // ── Source code: always include full source; curated snippets are optional guideposts ──
@@ -270,6 +312,8 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
       filePath: z.string().min(1),
       workspace: z.string().optional(),
       includeSource: z.boolean().optional().describe('Include source code in output (default true). Set false to omit source and show only metadata.'),
+      includeNeighbors: z.boolean().optional().describe('Include import/caller neighbor blurbs (default false). Set true when you need to understand a file\'s neighborhood. For topology analysis, prefer atlas_graph action=neighbors instead.'),
+      includeCrossRefs: z.boolean().optional().describe('Include cross-reference details with call sites (default false). Set true when you need blast radius info. For impact analysis, prefer atlas_graph action=impact instead.'),
     },
     async (args: AtlasLookupArgs) => runLookupTool(runtime, args),
   );

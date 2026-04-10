@@ -28,6 +28,7 @@ const atlasQuerySchema = {
   workspaces: z.array(z.string()).optional(),
   min_score: z.number().optional(),
   include_neighbors: z.boolean().optional(),
+  include_cross_refs: z.boolean().optional(),
   neighbor_depth: z.number().int().optional(),
   cluster: z.string().optional(),
   pattern: z.string().optional(),
@@ -180,6 +181,7 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
       workspaces,
       min_score,
       include_neighbors,
+      include_cross_refs,
       neighbor_depth,
       cluster,
       pattern,
@@ -207,6 +209,7 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
       workspaces?: string[];
       min_score?: number;
       include_neighbors?: boolean;
+      include_cross_refs?: boolean;
       neighbor_depth?: number;
       cluster?: string;
       pattern?: string;
@@ -232,7 +235,13 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
         case 'lookup':
           if (!resolvedFilePath) return missing('file_path');
           {
-            const result = await runLookupTool(runtime, { filePath: resolvedFilePath, workspace, includeSource: include_source });
+            const result = await runLookupTool(runtime, {
+              filePath: resolvedFilePath,
+              workspace,
+              includeSource: include_source,
+              includeNeighbors: include_neighbors,
+              includeCrossRefs: include_cross_refs,
+            });
             return appendGuidance(result, buildLookupHint(firstText(result)));
           }
         case 'brief':
