@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { listAtlasFiles, listImportEdges } from '../db.js';
 import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
 import { toolWithDescription } from './helpers.js';
+import { resolveWorkspaceDb } from './bridge.js';
 
 type ReachabilityMode = 'dead_exports' | 'dead_files' | 'path_query' | 'entrypoints';
 
@@ -501,9 +502,14 @@ export function registerReachabilityTool(server: McpServer, runtime: AtlasRuntim
       workspace?: string;
       includeTestFiles?: boolean;
     }) => {
-      const ws = workspace ?? runtime.config.workspace;
+      const resolved = resolveWorkspaceDb(runtime, workspace);
+      if ('error' in resolved) {
+        return { content: [{ type: 'text' as const, text: resolved.error }] };
+      }
+      const ws = resolved.workspace;
+      const effectiveRuntime = resolved.db === runtime.db ? runtime : { ...runtime, db: resolved.db };
       const includeTests = includeTestFiles ?? false;
-      const ctx = buildContext(runtime, ws, includeTests);
+      const ctx = buildContext(effectiveRuntime, ws, includeTests);
 
       if (mode === 'path_query') {
         if (!from || !to) {

@@ -9,6 +9,7 @@ import {
   searchChangelogFts,
 } from '../db.js';
 import { trackQuery } from '../queryLog.js';
+import { resolveWorkspaceDb } from './bridge.js';
 
 interface RankedResult {
   changelog_id: number;
@@ -113,7 +114,7 @@ function formatEntry(entry: AtlasChangelogRecord, diff?: string | null): string 
   const lines = [
     `# ${entry.file_path}`,
     `- id: ${entry.id}`,
-    `- created_at: ${entry.created_at}`,
+    `- created_at: ${new Date(entry.created_at + 'Z').toLocaleString('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} PST`,
     `- summary: ${entry.summary}`,
     `- cluster: ${entry.cluster ?? '(none)'}`,
     `- breaking_changes: ${entry.breaking_changes ? 'true' : 'false'}`,
@@ -155,14 +156,20 @@ async function handleQuery(runtime: AtlasRuntime, args: Record<string, unknown>)
   const workspace = args.workspace as string | undefined;
   const include_diff = args.include_diff as boolean | undefined;
 
-  const activeWorkspace = workspace ?? runtime.config.workspace;
   const maxResults = Math.max(1, Math.min(limit ?? 20, 100));
   const filterSet = { file, file_prefix, cluster, since, until, verification_status, breaking_only };
+
+  // Resolve the correct database for cross-workspace queries
+  const resolved = resolveWorkspaceDb(runtime, workspace);
+  if ('error' in resolved) {
+    return { content: [{ type: 'text' as const, text: resolved.error }] };
+  }
+  const { db: targetDb, workspace: activeWorkspace } = resolved;
 
   let entries: AtlasChangelogRecord[];
   if (query) {
     const candidateLimit = Math.min(100, Math.max(maxResults * 5, 25));
-    const bm25Results = mapHitsToRanked(searchChangelogFts(runtime.db, activeWorkspace, query, candidateLimit));
+    const bm25Results = mapHitsToRanked(searchChangelogFts(targetDb, activeWorkspace, query, candidateLimit));
 
     const fused = fuseResults(bm25Results, []);
     entries = fused
@@ -170,7 +177,7 @@ async function handleQuery(runtime: AtlasRuntime, args: Record<string, unknown>)
       .filter((entry) => matchesFilters(entry, filterSet))
       .slice(0, maxResults);
   } else {
-    entries = queryAtlasChangelog(runtime.db, {
+    entries = queryAtlasChangelog(targetDb, {
       workspace: activeWorkspace,
       file,
       file_prefix,

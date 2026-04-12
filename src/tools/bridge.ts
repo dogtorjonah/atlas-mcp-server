@@ -134,6 +134,51 @@ function getFileCount(db: AtlasDatabase, workspace: string): number {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-workspace DB resolution
+// ---------------------------------------------------------------------------
+
+export interface ResolvedWorkspace {
+  db: AtlasDatabase;
+  workspace: string;
+  sourceRoot: string;
+}
+
+/**
+ * Resolve the correct database handle for a workspace parameter.
+ * Returns runtime's own db when workspace matches (or is omitted),
+ * otherwise discovers and opens the target workspace's bridge db.
+ */
+export function resolveWorkspaceDb(
+  runtime: AtlasRuntime,
+  workspace?: string,
+): ResolvedWorkspace | { error: string } {
+  const targetWorkspace = workspace ?? runtime.config.workspace;
+
+  // Current workspace — use runtime db directly
+  if (targetWorkspace === runtime.config.workspace) {
+    return {
+      db: runtime.db,
+      workspace: runtime.config.workspace,
+      sourceRoot: runtime.config.sourceRoot,
+    };
+  }
+
+  // Cross-workspace — discover and open bridge db
+  const allDbs = discoverWorkspaces(runtime.config.sourceRoot);
+  const target = allDbs.find((bdb) => bdb.workspace === targetWorkspace);
+  if (!target) {
+    const available = allDbs.map((d) => d.workspace).join(', ');
+    return { error: `Workspace "${targetWorkspace}" not found. Available: ${available}` };
+  }
+
+  return {
+    db: target.db,
+    workspace: target.workspace,
+    sourceRoot: target.sourceRoot,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Tool registration
 // ---------------------------------------------------------------------------
 

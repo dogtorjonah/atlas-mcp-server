@@ -318,6 +318,64 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
   return db;
 }
 
+// ---------------------------------------------------------------------------
+// Atlas backup — auto-snapshot before any destructive operation
+// ---------------------------------------------------------------------------
+
+const MAX_BACKUPS = 5;
+
+/**
+ * Create a timestamped backup of the atlas database.
+ * Backups are stored in .atlas/backups/ alongside the database.
+ * Keeps at most MAX_BACKUPS copies, pruning oldest when exceeded.
+ * Returns the backup path on success, or null if the source doesn't exist.
+ */
+export function backupAtlasDatabase(dbPath: string): string | null {
+  if (!fs.existsSync(dbPath)) return null;
+
+  const atlasDir = path.dirname(dbPath);
+  const backupDir = path.join(atlasDir, 'backups');
+  fs.mkdirSync(backupDir, { recursive: true });
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+  const basename = path.basename(dbPath, '.sqlite');
+  const backupPath = path.join(backupDir, `${basename}_${timestamp}.sqlite`);
+
+  try {
+    fs.copyFileSync(dbPath, backupPath);
+    // Also copy WAL if it exists (for consistency)
+    const walPath = `${dbPath}-wal`;
+    if (fs.existsSync(walPath)) {
+      fs.copyFileSync(walPath, `${backupPath}-wal`);
+    }
+    console.log(`[atlas-backup] Backed up ${dbPath} → ${backupPath}`);
+  } catch (err) {
+    console.error(`[atlas-backup] Failed to backup ${dbPath}:`, err instanceof Error ? err.message : String(err));
+    return null;
+  }
+
+  // Prune old backups — keep only the newest MAX_BACKUPS
+  try {
+    const files = fs.readdirSync(backupDir)
+      .filter((f) => f.startsWith(basename) && f.endsWith('.sqlite'))
+      .sort()
+      .reverse();
+
+    for (const old of files.slice(MAX_BACKUPS)) {
+      const oldPath = path.join(backupDir, old);
+      fs.unlinkSync(oldPath);
+      // Clean up sidecar WAL if present
+      try { fs.unlinkSync(`${oldPath}-wal`); } catch { /* ignore */ }
+      try { fs.unlinkSync(`${oldPath}-shm`); } catch { /* ignore */ }
+      console.log(`[atlas-backup] Pruned old backup: ${old}`);
+    }
+  } catch {
+    // Non-fatal — pruning failure shouldn't block the operation
+  }
+
+  return backupPath;
+}
+
 export function deleteAtlasDatabaseFiles(dbPath: string): void {
   const sidecars = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`];
   for (const filePath of sidecars) {
@@ -332,6 +390,12 @@ export function deleteAtlasDatabaseFiles(dbPath: string): void {
 }
 
 export function resetAtlasDatabase(options: AtlasDbOptions, currentDb?: AtlasDatabase): AtlasDatabase {
+  // Auto-backup before destroying — always restorable
+  const backupPath = backupAtlasDatabase(options.dbPath);
+  if (backupPath) {
+    console.log(`[atlas-reset] Pre-reset backup saved: ${backupPath}`);
+  }
+
   if (currentDb) {
     try {
       currentDb.close();

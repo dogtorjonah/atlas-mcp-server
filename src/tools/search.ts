@@ -5,7 +5,7 @@ import type { AtlasDatabase } from '../db.js';
 import { searchAtlasFiles, searchFts } from '../db.js';
 import { toolWithDescription } from './helpers.js';
 import { trackQuery } from '../queryLog.js';
-import { discoverWorkspaces } from './bridge.js';
+import { discoverWorkspaces, resolveWorkspaceDb } from './bridge.js';
 
 interface RankedResult {
   file_path: string;
@@ -119,8 +119,13 @@ export async function runSearchTool(runtime: AtlasRuntime, { query, limit, works
 
   // ── Single-workspace mode ──
   // Primary: BM25 full-text search. No API key required.
-  const activeWorkspace = workspace ?? runtime.config.workspace;
-  const results = searchOneWorkspace(runtime.db, activeWorkspace, query, maxResults);
+  // Resolve correct database for cross-workspace queries
+  const resolved = resolveWorkspaceDb(runtime, workspace);
+  if ('error' in resolved) {
+    return { content: [{ type: 'text' as const, text: resolved.error }] };
+  }
+  const { db: resolvedDb, workspace: activeWorkspace } = resolved;
+  const results = searchOneWorkspace(resolvedDb, activeWorkspace, query, maxResults);
 
   const sliced = results.slice(0, maxResults);
   trackQuery(

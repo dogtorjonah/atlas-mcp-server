@@ -62,6 +62,7 @@ async function handleInit(
             `  Source:    ${target.sourceRoot}`,
             '',
             'This deletes all extractions, embeddings, changelog entries, symbols, references, and community clusters.',
+            'A backup will be created automatically before destruction.',
             'Call with confirm=true to proceed.',
           ].join('\n'),
         }],
@@ -71,7 +72,7 @@ async function handleInit(
     // Close the read-only bridge handle before nuking
     closeBridgeDb(target.dbPath);
 
-    // Nuke and reopen with write access
+    // Nuke and reopen with write access (resetAtlasDatabase auto-backs up first)
     const migrationDir = fileURLToPath(new URL('../../migrations/', import.meta.url));
     const freshDb = resetAtlasDatabase(
       { dbPath: target.dbPath, migrationDir, sqliteVecExtension: runtime.config.sqliteVecExtension },
@@ -95,7 +96,7 @@ async function handleInit(
     return {
       content: [
         { type: 'text', text: `🔥 Database nuked and recreated for workspace "${targetWorkspace}" (cross-workspace).\n\n${reindexText}` },
-        { type: 'text', text: '💡 All previous extractions, embeddings, and changelog entries for this workspace have been destroyed.' },
+        { type: 'text', text: '💾 A backup was automatically saved to .atlas/backups/ before destruction. Use it to restore if needed.' },
       ],
     };
   }
@@ -112,13 +113,14 @@ async function handleInit(
           `  Database:  ${runtime.config.dbPath}`,
           '',
           'This deletes all extractions, embeddings, changelog entries, symbols, references, and community clusters.',
+          'A backup will be created automatically before destruction.',
           'Call with confirm=true to proceed.',
         ].join('\n'),
       }],
     };
   }
 
-  // Nuke and reopen
+  // Nuke and reopen (resetAtlasDatabase auto-backs up first)
   const migrationDir = fileURLToPath(new URL('../../migrations/', import.meta.url));
   const freshDb = resetAtlasDatabase(
     { dbPath: runtime.config.dbPath, migrationDir, sqliteVecExtension: runtime.config.sqliteVecExtension },
@@ -135,7 +137,7 @@ async function handleInit(
   return {
     content: [
       { type: 'text', text: `🔥 Database nuked and recreated for workspace "${runtime.config.workspace}".\n\n${reindexText}` },
-      { type: 'text', text: '💡 All previous extractions, embeddings, and changelog entries have been destroyed. The full pipeline is now running from scratch.' },
+      { type: 'text', text: '💾 A backup was automatically saved to .atlas/backups/ before destruction. Use it to restore if needed.' },
     ],
   };
 }
@@ -186,8 +188,8 @@ export function registerAdminTool(server: McpServer, runtime: AtlasRuntime): voi
     [
       'Strategic operations tool for Atlas maintenance, refresh, and workspace discovery.',
       'Use atlas_admin when the Atlas itself needs to be updated or inspected, not when you want code answers from the Atlas.',
-      'Actions: init destroys the database and rebuilds from scratch (requires confirm=true); reindex reruns extraction work and is the main way to refresh Atlas state after code changes; bridge_list discovers every local Atlas workspace available on the machine.',
-      'Workflow hints: use init when the database is corrupted, the schema changed, or you need a clean slate; use reindex with no args first to inspect status before starting work; use files=[...] for targeted refreshes after touching a few files; use confirm=true only when you actually want to launch a broader run; use phase="crossref" for cross-reference-only refreshes when structural passes are already current; use bridge_list before querying another workspace.',
+      'Actions: init destroys the database and rebuilds from scratch (requires confirm=true, auto-backs up to .atlas/backups/ before destruction); reindex reruns extraction work and is the main way to refresh Atlas state after code changes; bridge_list discovers every local Atlas workspace available on the machine.',
+      'Workflow hints: prefer reindex over init — init destroys all changelog history and agent metadata; use reindex with no args first to inspect status before starting work; use files=[...] for targeted refreshes after touching a few files; use confirm=true only when you actually want to launch a broader run; use phase="crossref" for cross-reference-only refreshes when structural passes are already current; use bridge_list before querying another workspace.',
       'The refreshed pipeline now feeds richer outputs, including AST-verified structural edges, deterministic flow analysis, heuristic crossref cross-references, and Leiden community clusters, so admin actions directly control the quality and freshness of those higher-value results.',
     ].join('\n'),
     {

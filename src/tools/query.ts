@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
 import { getAtlasFile } from '../db.js';
 import { toolWithDescription } from './helpers.js';
+import { resolveWorkspaceDb } from './bridge.js';
 import { runSearchTool } from './search.js';
 import { runLookupTool } from './lookup.js';
 import { runBriefTool } from './brief.js';
@@ -99,10 +100,13 @@ function buildSearchHint(runtime: AtlasRuntime, workspace: string, text: string)
   const paths = extractSearchPaths(text);
   if (paths.length === 0) return undefined;
 
+  const resolved = resolveWorkspaceDb(runtime, workspace);
+  const db = 'error' in resolved ? runtime.db : resolved.db;
+
   const clusterCounts = new Map<string, number>();
   let hazardCount = 0;
   for (const filePath of paths) {
-    const row = getAtlasFile(runtime.db, workspace, filePath);
+    const row = getAtlasFile(db, workspace, filePath);
     const cluster = row?.cluster?.trim();
     if (cluster) clusterCounts.set(cluster, (clusterCounts.get(cluster) ?? 0) + 1);
     if (Array.isArray(row?.hazards) && row.hazards.length > 0) hazardCount += 1;
@@ -147,7 +151,9 @@ function buildBriefHint(text: string): string | undefined {
 
 function buildSnippetHint(runtime: AtlasRuntime, workspace: string, filePath?: string): string | undefined {
   if (!filePath) return undefined;
-  const row = getAtlasFile(runtime.db, workspace, filePath);
+  const resolved = resolveWorkspaceDb(runtime, workspace);
+  const db = 'error' in resolved ? runtime.db : resolved.db;
+  const row = getAtlasFile(db, workspace, filePath);
   if (!row || !Array.isArray(row.hazards) || row.hazards.length === 0) return undefined;
   return `Hazard note for \`${filePath}\`: ${row.hazards[0]}.`;
 }
