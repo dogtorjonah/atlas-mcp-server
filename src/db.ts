@@ -253,12 +253,66 @@ function healVec0Table(
   }
 }
 
+// Minimum interval between auto-backups (1 hour).
+// Each process that opens the DB checks — only creates a backup if the newest
+// existing backup is older than this threshold.
+const AUTO_BACKUP_INTERVAL_MS = 60 * 60 * 1000;
+
+function shouldAutoBackup(dbPath: string): boolean {
+  const atlasDir = path.dirname(dbPath);
+  const backupDir = path.join(atlasDir, 'backups');
+  const basename = path.basename(dbPath, '.sqlite');
+  try {
+    if (!fs.existsSync(backupDir)) return true;
+    const backups = fs.readdirSync(backupDir)
+      .filter((f) => f.startsWith(basename) && f.endsWith('.sqlite'))
+      .sort()
+      .reverse();
+    if (backups.length === 0) return true;
+    const newestPath = path.join(backupDir, backups[0]!);
+    const stat = fs.statSync(newestPath);
+    return Date.now() - stat.mtimeMs > AUTO_BACKUP_INTERVAL_MS;
+  } catch {
+    return true;
+  }
+}
+
 export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
   ensureDirectory(options.dbPath);
+
+  // Auto-backup on open — creates a safe snapshot if no recent backup exists.
+  // This runs BEFORE opening the DB for writes, so if corruption has already
+  // occurred we don't overwrite a good backup with a bad one.
+  if (shouldAutoBackup(options.dbPath)) {
+    try {
+      // Quick integrity check before backing up — don't backup a corrupt DB
+      const probeDb = new Database(options.dbPath, { readonly: true });
+      const result = probeDb.pragma('integrity_check') as Array<{ integrity_check: string }>;
+      const isHealthy = result.length === 1 && result[0]?.integrity_check === 'ok';
+      probeDb.close();
+      if (isHealthy) {
+        backupAtlasDatabase(options.dbPath);
+        console.log('[atlas] Auto-backup created on open (healthy DB confirmed)');
+      } else {
+        console.warn('[atlas] Skipping auto-backup — integrity check failed. DB may be corrupt.');
+      }
+    } catch (err) {
+      console.warn(`[atlas] Auto-backup skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   const db = new Database(options.dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  // Prevent SQLITE_BUSY errors under concurrent multi-process access:
+  // Wait up to 30 seconds for locks instead of failing immediately.
+  db.pragma('busy_timeout = 30000');
+  // NORMAL sync is safe with WAL — fsync on checkpoint only, not every commit.
+  // This avoids the corruption risk of WAL + synchronous=OFF while keeping good perf.
+  db.pragma('synchronous = NORMAL');
+  // Limit WAL file growth — auto-checkpoint every 1000 pages (~4MB).
+  // Prevents unbounded WAL growth when many writers are active.
+  db.pragma('wal_autocheckpoint = 1000');
   const vecLoaded = loadSqliteVec(db, options.sqliteVecExtension);
 
   // Migration tracking — only run each migration file once
@@ -342,16 +396,27 @@ export function backupAtlasDatabase(dbPath: string): string | null {
   const backupPath = path.join(backupDir, `${basename}_${timestamp}.sqlite`);
 
   try {
-    fs.copyFileSync(dbPath, backupPath);
-    // Also copy WAL if it exists (for consistency)
-    const walPath = `${dbPath}-wal`;
-    if (fs.existsSync(walPath)) {
-      fs.copyFileSync(walPath, `${backupPath}-wal`);
+    // Use SQLite's native backup API via VACUUM INTO — this is safe even when
+    // other processes are actively writing. Unlike fs.copyFileSync, VACUUM INTO
+    // produces a consistent, self-contained snapshot that includes all WAL data.
+    // This is the ONLY correct way to backup a WAL-mode database.
+    const sourceDb = new Database(dbPath, { readonly: true });
+    sourceDb.pragma('busy_timeout = 5000');
+    try {
+      sourceDb.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+    } finally {
+      sourceDb.close();
     }
-    console.log(`[atlas-backup] Backed up ${dbPath} → ${backupPath}`);
+    console.log(`[atlas-backup] Backed up ${dbPath} → ${backupPath} (VACUUM INTO)`);
   } catch (err) {
     console.error(`[atlas-backup] Failed to backup ${dbPath}:`, err instanceof Error ? err.message : String(err));
-    return null;
+    // Fallback: raw copy (better than nothing, but may be inconsistent)
+    try {
+      fs.copyFileSync(dbPath, backupPath);
+      console.warn(`[atlas-backup] Fallback: raw file copy (may be inconsistent if WAL is active)`);
+    } catch {
+      return null;
+    }
   }
 
   // Prune old backups — keep only the newest MAX_BACKUPS
