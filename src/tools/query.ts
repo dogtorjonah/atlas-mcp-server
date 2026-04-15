@@ -21,6 +21,7 @@ const atlasQuerySchema = {
   filePath: z.string().optional(),
   query: z.string().optional(),
   limit: z.number().int().optional(),
+  offset: z.number().int().min(0).optional(),
   format: z.enum(['json', 'text']).optional(),
   symbol: z.string().optional(),
   start_line: z.number().int().optional(),
@@ -179,6 +180,7 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
       filePath,
       query,
       limit,
+      offset,
       format,
       symbol,
       start_line,
@@ -207,6 +209,7 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
       filePath?: string;
       query?: string;
       limit?: number;
+      offset?: number;
       format?: 'json' | 'text';
       symbol?: string;
       start_line?: number;
@@ -247,6 +250,8 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
               includeSource: include_source,
               includeNeighbors: include_neighbors,
               includeCrossRefs: include_cross_refs,
+              offset,
+              limit,
             });
             return appendGuidance(result, buildLookupHint(firstText(result)));
           }

@@ -21,6 +21,21 @@ interface ChangelogRow {
   created_at: string;
 }
 
+function parseSqliteUtcTimestamp(value: string | null | undefined): Date | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const normalized = /(?:Z|[+-]\d{2}:\d{2})$/.test(trimmed)
+    ? trimmed
+    : `${trimmed.replace(' ', 'T')}Z`;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatLocalTimestamp(value: string | null | undefined): string {
+  const parsed = parseSqliteUtcTimestamp(value);
+  return parsed ? parsed.toLocaleString() : 'unknown';
+}
+
 function getRecentChangelog(db: AtlasDatabase, workspace: string, filePath: string, limit = 5): ChangelogRow[] {
   try {
     const rows = db.prepare(
@@ -38,7 +53,7 @@ function getRecentChangelog(db: AtlasDatabase, workspace: string, filePath: stri
 }
 
 function formatChangelogRow(row: ChangelogRow, index: number): string {
-  const ts = row.created_at ? new Date(row.created_at).toLocaleString() : 'unknown';
+  const ts = formatLocalTimestamp(row.created_at);
   const verified = row.verification_status === 'confirmed' ? '✅' : row.verification_status === 'pending' ? '⏳' : '❌';
   let lines = `  ${index + 1}. ${row.summary} ${verified}`;
   lines += `\n     Author: ${row.author_instance_id ?? 'unknown'} | ${row.author_engine ?? '?'} | ${ts}`;
@@ -116,13 +131,15 @@ export interface AtlasLookupArgs {
   includeSource?: boolean;
   includeNeighbors?: boolean;
   includeCrossRefs?: boolean;
+  offset?: number;
+  limit?: number;
 }
 
 type AtlasToolTextResult = {
   content: Array<{ type: 'text'; text: string }>;
 };
 
-export async function runLookupTool(runtime: AtlasRuntime, { filePath, workspace, includeSource, includeNeighbors, includeCrossRefs }: AtlasLookupArgs): Promise<AtlasToolTextResult> {
+export async function runLookupTool(runtime: AtlasRuntime, { filePath, workspace, includeSource, includeNeighbors, includeCrossRefs, offset, limit: sourceLimit }: AtlasLookupArgs): Promise<AtlasToolTextResult> {
   const ws = workspace ?? runtime.config.workspace;
 
   // Resolve DB and sourceRoot — local workspace or cross-workspace via bridge discovery
@@ -286,11 +303,42 @@ export async function runLookupTool(runtime: AtlasRuntime, { filePath, workspace
 
   if (shouldIncludeSource && sourceFile) {
     const sourceLines = sourceFile.content.split('\n');
-    lines.push('');
-    lines.push(`## Source (${sourceLines.length} lines)`);
-    lines.push('```');
-    lines.push(sourceLines.join('\n'));
-    lines.push('```');
+    const totalLines = sourceLines.length;
+
+    // Smart pagination: auto-paginate large files, pass through small ones
+    const SOURCE_PAGE_SIZE = 500;
+    const hasPaginationParams = offset !== undefined || sourceLimit !== undefined;
+    const needsPagination = totalLines > SOURCE_PAGE_SIZE || hasPaginationParams;
+
+    if (!needsPagination) {
+      // Small file — return everything (no behavior change for files ≤500 lines)
+      lines.push('');
+      lines.push(`## Source (${totalLines} lines)`);
+      lines.push('```');
+      lines.push(sourceLines.join('\n'));
+      lines.push('```');
+    } else {
+      // Large file or explicit pagination — slice with offset/limit
+      const startLine = Math.min(offset ?? 0, totalLines);
+      const pageSize = sourceLimit ?? SOURCE_PAGE_SIZE;
+      const endLine = Math.min(startLine + pageSize, totalLines);
+      const page = sourceLines.slice(startLine, endLine);
+
+      lines.push('');
+      lines.push(`## Source (lines ${startLine + 1}–${endLine} of ${totalLines})`);
+      lines.push('```');
+      // Number each line for parity with Read tool output
+      for (let i = 0; i < page.length; i++) {
+        lines.push(`${String(startLine + i + 1).padStart(5)}\t${page[i]}`);
+      }
+      lines.push('```');
+
+      if (endLine < totalLines) {
+        const remaining = totalLines - endLine;
+        lines.push(`\n📄 ${remaining} more lines. Next page: \`atlas_query action=lookup file_path="${filePath}" offset=${endLine}\``);
+      }
+    }
+
     if (highlights.length === 0) {
       lines.push('\n💡 This file has no curated source highlights yet. Run `atlas_commit` with `source_highlights` to add guidepost snippets for future lookups.');
     }
@@ -314,7 +362,9 @@ export function registerLookupTool(server: McpServer, runtime: AtlasRuntime): vo
       includeSource: z.boolean().optional().describe('Include source code in output (default true). Set false to omit source and show only metadata.'),
       includeNeighbors: z.boolean().optional().describe('Include import/caller neighbor blurbs (default false). Set true when you need to understand a file\'s neighborhood. For topology analysis, prefer atlas_graph action=neighbors instead.'),
       includeCrossRefs: z.boolean().optional().describe('Include cross-reference details with call sites (default false). Set true when you need blast radius info. For impact analysis, prefer atlas_graph action=impact instead.'),
+      offset: z.number().int().min(0).optional().describe('Source code line offset (0-indexed). For large files (>500 lines), source is auto-paginated. Use offset to read subsequent pages.'),
+      limit: z.number().int().min(1).optional().describe('Max source lines to return per page (default 500). Use with offset for pagination.'),
     },
-    async (args: AtlasLookupArgs) => runLookupTool(runtime, args),
+    async (args: AtlasLookupArgs & Record<string, unknown>) => runLookupTool(runtime, args),
   );
 }

@@ -11,6 +11,21 @@ interface RuntimeDbContext {
   workspace: string;
 }
 
+function parseSqliteUtcTimestamp(value: string | null | undefined): Date | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const normalized = /(?:Z|[+-]\d{2}:\d{2})$/.test(trimmed)
+    ? trimmed
+    : `${trimmed.replace(' ', 'T')}Z`;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatLocalTimestamp(value: string | null | undefined): string {
+  const parsed = parseSqliteUtcTimestamp(value);
+  return parsed ? parsed.toLocaleString() : 'unknown';
+}
+
 function resolveDbContext(runtime: AtlasRuntime, workspace?: string): RuntimeDbContext | null {
   if (!workspace || workspace === runtime.config.workspace) {
     return { db: runtime.db, workspace: runtime.config.workspace };
@@ -23,7 +38,7 @@ function resolveDbContext(runtime: AtlasRuntime, workspace?: string): RuntimeDbC
 }
 
 function formatEntry(entry: AtlasChangelogRecord): string {
-  return `- ${entry.created_at} | ${entry.file_path} | ${entry.author_engine ?? 'unknown'} | ${entry.verification_status}${entry.breaking_changes ? ' | BREAKING' : ''}\n  ${entry.summary}`;
+  return `- ${formatLocalTimestamp(entry.created_at)} | ${entry.file_path} | ${entry.author_engine ?? 'unknown'} | ${entry.verification_status}${entry.breaking_changes ? ' | BREAKING' : ''}\n  ${entry.summary}`;
 }
 
 function atlasContent(format: 'json' | 'text' | undefined, payload: Record<string, unknown>, text: string) {

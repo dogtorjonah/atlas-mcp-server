@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { writeFileSync, unlinkSync } from 'node:fs';
 import { getAtlasFile, getFilePhase, listAtlasFiles, openAtlasDatabase, rebuildFts, resetAtlasDatabase, upsertAtlasMeta, upsertFileRecord } from '../db.js';
-import type { AtlasCrossRefs, AtlasFileRecord, AtlasServerConfig } from '../types.js';
+import type { AtlasCrossRefs, AtlasFileRecord, AtlasServerConfig, SourceHighlight } from '../types.js';
 import { toFileUpsertInput } from './shared.js';
 import { runScan, type ScanFileInfo } from './scan.js';
 import { persistCrossRefs, runCrossref } from './crossref.js';
@@ -447,6 +447,70 @@ async function runSequentialPipelineBatch(
   };
 }
 
+// ── Source highlight healing ──────────────────────────────────────────────────
+// Detects and cleans broken source_highlights entries in atlas records.
+// Broken entries are common when lightweight agents commit malformed data —
+// e.g., empty content, undefined line numbers, or NaN ids. This healing pass
+// runs at the start of every reindex so the atlas is self-cleaning.
+
+function isValidSourceHighlight(entry: unknown): entry is SourceHighlight {
+  if (!entry || typeof entry !== 'object') return false;
+  const record = entry as Record<string, unknown>;
+  // Must have non-empty content
+  if (typeof record.content !== 'string' || record.content.trim().length === 0) return false;
+  // Must have finite positive line numbers
+  if (typeof record.startLine !== 'number' || !Number.isFinite(record.startLine) || record.startLine < 1) return false;
+  if (typeof record.endLine !== 'number' || !Number.isFinite(record.endLine) || record.endLine < 1) return false;
+  // Must have a finite positive id
+  if (typeof record.id !== 'number' || !Number.isFinite(record.id) || record.id < 1) return false;
+  return true;
+}
+
+interface HealResult {
+  filesScanned: number;
+  filesHealed: number;
+  entriesRemoved: number;
+}
+
+function healSourceHighlights(
+  db: ReturnType<typeof openAtlasDatabase>,
+  workspace: string,
+  atlasRecords: Map<string, AtlasFileRecord>,
+): HealResult {
+  let filesHealed = 0;
+  let entriesRemoved = 0;
+
+  for (const [filePath, record] of atlasRecords) {
+    const highlights = record.source_highlights;
+    if (!Array.isArray(highlights) || highlights.length === 0) continue;
+
+    const valid = highlights.filter(isValidSourceHighlight);
+    const removed = highlights.length - valid.length;
+    if (removed === 0) continue;
+
+    // Re-number ids sequentially after filtering
+    const renumbered = valid.map((h, i) => ({ ...h, id: i + 1 }));
+
+    upsertFileRecord(db, toFileUpsertInput(record, {
+      source_highlights: renumbered,
+    }));
+
+    // Update the in-memory record so downstream phases see the clean data
+    atlasRecords.set(filePath, { ...record, source_highlights: renumbered });
+
+    filesHealed++;
+    entriesRemoved += removed;
+  }
+
+  if (filesHealed > 0) {
+    console.log(
+      `[atlas-init] healed source_highlights: ${entriesRemoved} broken entries removed from ${filesHealed} files`,
+    );
+  }
+
+  return { filesScanned: atlasRecords.size, filesHealed, entriesRemoved };
+}
+
 export interface RuntimeReindexOptions {
   db: ReturnType<typeof openAtlasDatabase>;
   workspace: string;
@@ -465,6 +529,9 @@ export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise
   const atlasRecords = new Map(
     listAtlasFiles(db, workspace).map((record) => [record.file_path, record] as const),
   );
+
+  // Heal broken source_highlights before any pipeline phases run
+  healSourceHighlights(db, workspace, atlasRecords);
 
   const context: BatchPipelineContext = {
     db,
@@ -561,6 +628,7 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
       const atlasRecords = new Map(
         listAtlasFiles(db, workspace).map((record) => [record.file_path, record] as const),
       );
+      healSourceHighlights(db, workspace, atlasRecords);
       const crossrefContext: BatchPipelineContext = {
         db,
         workspace,
@@ -602,6 +670,7 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
     const atlasRecords = new Map(
       listAtlasFiles(db, workspace).map((record) => [record.file_path, record] as const),
     );
+    healSourceHighlights(db, workspace, atlasRecords);
 
     const mainContext: BatchPipelineContext = {
       db,

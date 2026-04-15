@@ -29,6 +29,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
 import { toolWithDescription } from './helpers.js';
+import { atlasCommitInputSchema, normalizeAtlasCommitPayload } from './commitPayload.js';
 import {
   getAtlasFile,
   insertAtlasChangelog,
@@ -133,21 +134,6 @@ setInterval(() => {
   }
 }, 60_000);
 
-const apiEntrySchema = z.object({
-  name: z.string(),
-  type: z.string(),
-  signature: z.string().optional(),
-  description: z.string().optional(),
-});
-
-const sourceHighlightSchema = z.object({
-  id: z.number().int().min(1).describe('1-indexed snippet number for referencing ("see snippet 3")'),
-  label: z.string().optional().describe('Short description ("main export", "error handling", "config parsing")'),
-  startLine: z.number().int().min(1).describe('1-indexed start line in source file'),
-  endLine: z.number().int().min(1).describe('1-indexed end line in source file'),
-  content: z.string().describe('The actual source code text of this segment'),
-});
-
 // ── Tool Registration ────────────────────────────────────────────────────────
 
 export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): void {
@@ -195,93 +181,35 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       '## Changelog — Built In (No Separate Call Needed)',
       'The `changelog_entry` field IS the changelog. Every call automatically creates a changelog entry from it. Include `patterns_added`, `patterns_removed`, `hazards_added`, `hazards_removed` to record what changed — this is what `atlas_changelog action=query` returns. You do NOT need a separate `atlas_changelog action=log` call.',
     ].join('\n'),
-    {
-      // ── Changelog fields ──
-      file_path: z.string().min(1),
-      changelog_entry: z.string().min(1).describe(
-        'What you changed and why (1-2 sentences). This becomes the changelog entry visible under "Recent Changes" in atlas_query lookups. Describe YOUR EDIT, not the file itself — use purpose/blurb for file identity.',
-      ),
-      summary: z.string().min(1).optional().describe('Deprecated alias for changelog_entry. Use changelog_entry instead.'),
-      patterns_added: z.array(z.string()).optional(),
-      patterns_removed: z.array(z.string()).optional(),
-      hazards_added: z.array(z.string()).optional(),
-      hazards_removed: z.array(z.string()).optional(),
-      cluster: z.string().optional(),
-      breaking_changes: z.boolean().optional(),
-      commit_sha: z.string().optional(),
-      author_instance_id: z.string().optional(),
-      author_engine: z.string().optional(),
-      review_entry_id: z.string().optional(),
-      quiet: z.boolean().optional().describe('Controls response verbosity (default true — compact one-line response). Set false to get verbose feedback with coverage warnings, changelog hints, and flush reminders.'),
+    atlasCommitInputSchema,
+    async (rawArgs: Record<string, unknown>) => {
+      const {
+        file_path,
+        changelog_entry,
+        summary,
+        patterns_added,
+        patterns_removed,
+        hazards_added,
+        hazards_removed,
+        cluster,
+        breaking_changes,
+        commit_sha,
+        author_instance_id,
+        author_engine,
+        review_entry_id,
+        purpose,
+        public_api,
+        conventions,
+        key_types,
+        data_flows,
+        hazards,
+        patterns,
+        dependencies,
+        blurb,
+        source_highlights,
+        quiet,
+      } = normalizeAtlasCommitPayload(rawArgs);
 
-      // ── Inline atlas_files update fields (NEW) ──
-      purpose: z.string().optional(),
-      public_api: z.array(apiEntrySchema).optional(),
-      conventions: z.array(z.string()).optional(),
-      key_types: z.array(z.string()).optional(),
-      data_flows: z.array(z.string()).optional(),
-      hazards: z.array(z.string()).optional(),
-      patterns: z.array(z.string()).optional(),
-      dependencies: z.record(z.unknown()).optional(),
-      blurb: z.string().optional(),
-      source_highlights: z.array(sourceHighlightSchema).optional().describe(
-        'AI-curated source snippets: select the most important/relevant disjointed sections of the file. Each snippet has id (1-indexed), optional label, startLine, endLine, and content. Replaces naive truncation with intelligent curation.',
-      ),
-    },
-    async ({
-      file_path,
-      changelog_entry,
-      summary: summaryLegacy,
-      patterns_added,
-      patterns_removed,
-      hazards_added,
-      hazards_removed,
-      cluster,
-      breaking_changes,
-      commit_sha,
-      author_instance_id,
-      author_engine,
-      review_entry_id,
-      // Inline atlas fields
-      purpose,
-      public_api,
-      conventions,
-      key_types,
-      data_flows,
-      hazards,
-      patterns,
-      dependencies,
-      blurb,
-      source_highlights,
-      quiet,
-    }: {
-      file_path: string;
-      changelog_entry?: string;
-      summary?: string;
-      patterns_added?: string[];
-      patterns_removed?: string[];
-      hazards_added?: string[];
-      hazards_removed?: string[];
-      cluster?: string;
-      breaking_changes?: boolean;
-      commit_sha?: string;
-      author_instance_id?: string;
-      author_engine?: string;
-      review_entry_id?: string;
-      quiet?: boolean;
-      purpose?: string;
-      public_api?: Array<{ name: string; type: string; signature?: string; description?: string }>;
-      conventions?: string[];
-      key_types?: string[];
-      data_flows?: string[];
-      hazards?: string[];
-      patterns?: string[];
-      dependencies?: Record<string, unknown>;
-      blurb?: string;
-      source_highlights?: Array<{ id: number; label?: string; startLine: number; endLine: number; content: string }>;
-    }) => {
-      // Resolve changelog_entry vs legacy summary — changelog_entry takes precedence
-      const summary = changelog_entry ?? summaryLegacy;
       if (!summary || summary.trim().length === 0) {
         throw new Error(
           'atlas_commit requires a changelog_entry describing what you changed and why. This is your edit log, not a file description.',

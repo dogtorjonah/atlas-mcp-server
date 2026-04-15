@@ -18,6 +18,21 @@ interface RankedResult {
   source: 'fts' | 'vector';
 }
 
+function parseSqliteUtcTimestamp(value: string | null | undefined): Date | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const normalized = /(?:Z|[+-]\d{2}:\d{2})$/.test(trimmed)
+    ? trimmed
+    : `${trimmed.replace(' ', 'T')}Z`;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatLocalTimestamp(value: string | null | undefined): string {
+  const parsed = parseSqliteUtcTimestamp(value);
+  return parsed ? parsed.toLocaleString() : 'unknown';
+}
+
 function formatStringList(values: string[]): string {
   return values.length > 0 ? values.join(', ') : '(none)';
 }
@@ -114,7 +129,7 @@ function formatEntry(entry: AtlasChangelogRecord, diff?: string | null): string 
   const lines = [
     `# ${entry.file_path}`,
     `- id: ${entry.id}`,
-    `- created_at: ${new Date(entry.created_at + 'Z').toLocaleString('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} PST`,
+    `- created_at: ${formatLocalTimestamp(entry.created_at)}`,
     `- summary: ${entry.summary}`,
     `- cluster: ${entry.cluster ?? '(none)'}`,
     `- breaking_changes: ${entry.breaking_changes ? 'true' : 'false'}`,

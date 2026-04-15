@@ -32,6 +32,7 @@ export function toFileUpsertInput(
     hazards: patch.hazards ?? file.hazards,
     conventions: patch.conventions ?? file.conventions,
     cross_refs: patch.cross_refs ?? file.cross_refs,
+    source_highlights: patch.source_highlights ?? file.source_highlights,
     language: patch.language ?? file.language,
     extraction_model: patch.extraction_model ?? file.extraction_model,
     last_extracted: patch.last_extracted ?? file.last_extracted,
