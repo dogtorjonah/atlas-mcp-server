@@ -480,6 +480,28 @@ function healSourceHighlights(
   let filesHealed = 0;
   let entriesRemoved = 0;
 
+  // ── Phase 1: Heal non-array corruption directly via raw SQL ────────────
+  // The DB read layer (parseJson + Array.isArray guard) silently converts corrupt
+  // strings to [] before atlasRecords is populated, so the in-memory records never
+  // see the corruption. We must query the raw SQLite column to find and fix these.
+  const corruptRows = db.prepare(
+    `SELECT file_path, source_highlights FROM atlas_files
+     WHERE workspace = ? AND source_highlights IS NOT NULL
+       AND source_highlights <> '[]' AND source_highlights <> 'null'
+       AND source_highlights NOT LIKE '[%'`
+  ).all(workspace) as Array<{ file_path: string; source_highlights: string }>;
+
+  for (const row of corruptRows) {
+    const record = atlasRecords.get(row.file_path);
+    if (!record) continue;
+    upsertFileRecord(db, toFileUpsertInput(record, { source_highlights: [] }));
+    atlasRecords.set(row.file_path, { ...record, source_highlights: [] });
+    filesHealed++;
+    entriesRemoved++; // count each corrupt blob as one removed entry
+    console.log(`[atlas-heal] non-array corruption fixed: ${row.file_path} (raw: ${row.source_highlights.slice(0, 60)}...)`);
+  }
+
+  // ── Phase 2: Heal malformed entries inside valid arrays ─────────────────
   for (const [filePath, record] of atlasRecords) {
     const highlights = record.source_highlights;
     if (!Array.isArray(highlights) || highlights.length === 0) continue;

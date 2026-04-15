@@ -590,7 +590,7 @@ export function mapFileRecord(row: Record<string, unknown>): AtlasFileRecord {
     hazards: parseJson<string[]>(row.hazards, []),
     conventions: parseJson<string[]>(row.conventions, []),
     cross_refs: parseJson<AtlasCrossRefs | null>(row.cross_refs, null),
-    source_highlights: parseJson<SourceHighlight[]>(row.source_highlights, []),
+    source_highlights: (() => { const parsed = parseJson<SourceHighlight[]>(row.source_highlights, []); return Array.isArray(parsed) ? parsed : []; })(),
     language: String(row.language ?? 'typescript'),
     extraction_model: row.extraction_model == null ? null : String(row.extraction_model),
     last_extracted: row.last_extracted == null ? null : String(row.last_extracted),

@@ -282,7 +282,8 @@ export async function runLookupTool(runtime: AtlasRuntime, { filePath, workspace
 
   // ── Source code: always include full source; curated snippets are optional guideposts ──
   const shouldIncludeSource = includeSource !== false;
-  const highlights = row.source_highlights ?? [];
+  const rawHighlights = row.source_highlights ?? [];
+  const highlights = Array.isArray(rawHighlights) ? rawHighlights : [];
 
   if (shouldIncludeSource && highlights.length > 0) {
     const sourceLines = sourceFile?.content.split('\n');
