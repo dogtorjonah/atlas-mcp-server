@@ -1,4 +1,4 @@
-import type { AtlasRuntime } from './types.js';
+import type { AtlasRuntime } from './types.ts';
 
 export interface QueryEntry {
   query: string;

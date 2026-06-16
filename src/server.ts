@@ -12,6 +12,8 @@ import { runFullPipeline } from './pipeline/index.js';
 import { startAtlasWatcher } from './watcher.js';
 import { registerChangelogTools } from './tools/changelog.js';
 import { registerCommitTool } from './tools/commit.js';
+import { registerDiffTool } from './tools/diff.js';
+import { registerWorktreeTools } from './tools/worktree.js';
 // Composite tools (21 → 5 consolidation — individual tools removed)
 import { registerQueryTool } from './tools/query.js';
 import { registerGraphCompositeTool } from './tools/graphComposite.js';
@@ -269,6 +271,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   // ── Standalone tools (not in any composite) ──
   registerChangelogTools(server, runtime);
   registerCommitTool(server, runtime);
+  registerDiffTool(server, runtime);
+  registerWorktreeTools(server, runtime);
 
   // ── Composite tools (21 → 5 consolidation) ──
   // atlas_query:  search, lookup, brief, snippet, similar, plan_context, cluster, patterns, history

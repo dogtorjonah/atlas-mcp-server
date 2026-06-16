@@ -1,0 +1,43 @@
+-- Wave 44 — hazards_with_ranges schema migration Phase 1 (foundation).
+--
+-- Adds a parallel `hazards_with_ranges` TEXT column to atlas_files for storing
+-- structured hazard entries with optional line ranges, alongside the existing
+-- `hazards` TEXT column (which remains the canonical text-only hazard array
+-- per 0001_init.sql:18). The two columns are deliberately parallel — Phase 1
+-- ships zero behavior change for hint helpers / FTS / lookup output; the new
+-- column is populated only when atlas_commit callers opt in via the matching
+-- input parameter.
+--
+-- Type contract (relay/src/atlas/types.ts):
+--   interface AtlasHazardWithRange {
+--     text: string;
+--     startLine?: number | null;
+--     endLine?: number | null;
+--   }
+--   AtlasFileExtraction.hazards_with_ranges?: AtlasHazardWithRange[]
+--   AtlasFileRecord.hazards_with_ranges: AtlasHazardWithRange[]
+--
+-- Reader/writer (relay/src/atlas/db.ts):
+--   mapFileRecord       — parses JSON into AtlasHazardWithRange[]
+--   upsertFileRecord    — JSON.stringify(record.hazards_with_ranges ?? [])
+--   AtlasFileUpsertInput.hazards_with_ranges?: AtlasHazardWithRange[]
+--
+-- Handler (relay/src/atlas/tools/commit.ts):
+--   atlas_commit accepts optional hazards_with_ranges parameter (Zod object
+--   array), passes through to upsertFileRecord. No FTS indexing of the new
+--   column in Phase 1.
+--
+-- Phase 2 (NOT this migration) will:
+--   - Wire buildLookupHint / buildBriefHint / buildSnippetHint to read this
+--     column and surface line-range-aware advice (deferred since Waves 35-38)
+--   - Optionally index the text portion in atlas_fts
+--   - Optionally backfill from legacy `hazards` (text-only entries with null
+--     ranges)
+--
+-- Default '[]' means every pre-Wave-44 row gracefully reads as an empty
+-- structured-hazards array — readers fall through to the legacy `hazards`
+-- column for full text coverage during the transition.
+
+ALTER TABLE atlas_files
+  ADD COLUMN hazards_with_ranges TEXT NOT NULL DEFAULT '[]'
+    CHECK (json_valid(hazards_with_ranges));
