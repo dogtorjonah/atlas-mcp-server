@@ -1,25 +1,25 @@
-import type { AtlasRuntime } from '../types.ts';
-import type { AtlasChangelogRecord } from '../db.ts';
+import type { AtlasRuntime } from '../types.js';
+import type { AtlasChangelogRecord } from '../db.js';
 import {
   searchChangelogFts,
   searchChangelogVector,
-} from '../db.ts';
+} from '../db.js';
 import {
   embedAtlasQueryText,
   fuseReciprocalRankResults,
-} from '../embeddings.ts';
-import { trackQuery } from '../queryLog.ts';
-import { resolveWorkspaceDb } from './bridge.ts';
-import { searchOneWorkspace, type RankedResult } from './search.ts';
+} from '../embeddings.js';
+import { trackQuery } from '../queryLog.js';
+import { resolveWorkspaceDb } from './bridge.js';
+import { searchOneWorkspace, type RankedResult } from './search.js';
 
 /**
  * atlas_query action=ask — six-pack #3.
  *
  * Deterministic "answer assembly" over the two evidence stores Atlas already
  * maintains: file metadata (purpose/blurb/hazards/source-highlight chunks via
- * the same hybrid BM25+vector fusion that powers action=search) and changelog
- * history (the same hybrid FTS+vector fusion that powers action=history with
- * a query). No LLM call — the output is a CITED BUNDLE the calling agent
+ * BM25/FTS search) and changelog history (FTS search with dense retrieval
+ * disabled in the standalone build until a real embedding provider exists).
+ * No LLM call — the output is a CITED BUNDLE the calling agent
  * synthesizes from: ranked file evidence with hazards and exact-line witness
  * regions, ranked changelog entries with IDs (citable / diffable), and a
  * witnesses pointer for who-to-tap follow-up.
@@ -127,18 +127,11 @@ function formatFileEvidence(results: RankedResult[]): string[] {
     const summary = result.record.purpose || result.record.blurb || '(no summary yet)';
     const lines = [`${index + 1}. ${result.file_path} — ${truncate(summary, 220)}`];
 
-    if (result.matchedChunk) {
-      const label = result.matchedChunk.label?.trim();
-      const kind = result.matchedChunk.kind === 'highlight' ? 'highlight' : 'source';
-      lines.push(
-        `   witness: ${kind}${label ? ` (${label})` : ''} lines ${result.matchedChunk.startLine}-${result.matchedChunk.endLine}`,
-      );
-    }
-
     const hazards = fileHazards(result.record);
     if (hazards.length > 0) {
+      const firstHazard = hazards[0] ?? '';
       const extra = hazards.length > 1 ? ` (+${hazards.length - 1} more)` : '';
-      lines.push(`   hazard: ${truncate(hazards[0], 160)}${extra}`);
+      lines.push(`   hazard: ${truncate(firstHazard, 160)}${extra}`);
     }
 
     lines.push(`   ↳ atlas_query action=lookup file_path="${result.file_path}"`);
@@ -183,7 +176,7 @@ export async function runAskTool(runtime: AtlasRuntime, args: AtlasAskArgs): Pro
   );
 
   const [fileResults, changelogResults] = await Promise.all([
-    searchOneWorkspace(runtime, db, workspace, question, fileLimit).then((results) => results.slice(0, fileLimit)),
+    Promise.resolve(searchOneWorkspace(db, workspace, question, fileLimit)).then((results) => results.slice(0, fileLimit)),
     searchChangelogEvidence(runtime, db, workspace, question, changelogLimit),
   ]);
 
@@ -212,14 +205,7 @@ export async function runAskTool(runtime: AtlasRuntime, args: AtlasAskArgs): Pro
         purpose: result.record.purpose || null,
         blurb: result.record.blurb || null,
         hazards: fileHazards(result.record),
-        witness: result.matchedChunk
-          ? {
-            kind: result.matchedChunk.kind,
-            label: result.matchedChunk.label ?? null,
-            start_line: result.matchedChunk.startLine,
-            end_line: result.matchedChunk.endLine,
-          }
-          : null,
+        witness: null,
       })),
       changelog: changelogResults.map(({ record, score }) => ({
         changelog_id: record.id,
@@ -231,7 +217,7 @@ export async function runAskTool(runtime: AtlasRuntime, args: AtlasAskArgs): Pro
         breaking_changes: record.breaking_changes,
         author_name: record.author_name,
       })),
-      witnesses_pointer: fileResults.length > 0
+      witnesses_pointer: fileResults[0]
         ? `atlas_query action=lookup file_path="${fileResults[0].file_path}" include_cross_refs=true`
         : null,
     };
@@ -241,7 +227,7 @@ export async function runAskTool(runtime: AtlasRuntime, args: AtlasAskArgs): Pro
   const sections: string[] = [
     `# Atlas Ask: "${question}"`,
     '',
-    'Cited evidence bundle (hybrid BM25+vector over file metadata + changelog history). Synthesize your answer from the citations below; follow the ↳ commands for deeper evidence.',
+    'Cited evidence bundle (BM25/FTS over file metadata + changelog history; standalone dense vectors are disabled until a real provider is wired). Synthesize your answer from the citations below; follow the ↳ commands for deeper evidence.',
   ];
 
   if (fileResults.length > 0) {
@@ -256,11 +242,12 @@ export async function runAskTool(runtime: AtlasRuntime, args: AtlasAskArgs): Pro
     sections.push('', '## Changelog evidence', '(no changelog matches — the question may be about current structure rather than history)');
   }
 
-  if (fileResults.length > 0) {
+  const firstFileResult = fileResults[0];
+  if (firstFileResult) {
     sections.push(
       '',
       '## Witnesses',
-      `↳ atlas_query action=lookup file_path="${fileResults[0].file_path}" include_cross_refs=true — the File Witnesses section ranks prior readers/editors to tap (tap_instance_messages) for first-hand context.`,
+      `↳ atlas_query action=lookup file_path="${firstFileResult.file_path}" include_cross_refs=true — the File Witnesses section ranks prior readers/editors to tap (tap_instance_messages) for first-hand context.`,
     );
   }
 

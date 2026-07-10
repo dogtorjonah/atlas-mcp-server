@@ -47,21 +47,30 @@ Agents can curate the most important code sections during `atlas_commit`. Each h
 
 For a 2000-line file, an agent might select 3 key segments — the main export, the error handling, and the config parsing — skipping boilerplate entirely. Changelog entries can reference snippets by number ("refer to snippet 5").
 
-`atlas_query action=lookup` always includes the full source code. When curated highlights exist, it also shows them as guideposts that call out the most important sections without replacing the full file.
+`atlas_query action=lookup` includes source by default and auto-paginates large files. When curated highlights exist, it also shows them as guideposts that call out the most important sections without replacing source access.
 
 ## Search
 
 Atlas provides BM25 full-text search via SQLite FTS5. Results are ranked by relevance against file purposes, patterns, descriptions, and export names. Search quality improves automatically as agents fill in metadata via `atlas_commit` — the index uses the codebase's own vocabulary.
 
+Dense vector retrieval is not enabled in the standalone package yet. The embedding scaffolding remains in the codebase, but `embedBatch`/`embedQuery` deliberately throw and `areAtlasEmbeddingsEnabled()` returns `false`, so search, `similar`, `plan_context`, changelog evidence, and `ask` are BM25/FTS-first until a real provider is wired.
+
+`atlas_query action=ask` is deterministic evidence assembly, not an LLM answer. It returns cited file and changelog evidence for the calling agent to synthesize.
+
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `atlas_query` | Composite retrieval: search, lookup, brief, snippet, similar, plan_context, cluster, patterns, history |
+| `atlas_query` | Composite retrieval: search, lookup, brief, snippet, similar, plan_context, cluster, patterns, history, catalog, ask |
 | `atlas_graph` | Topology analysis: impact, neighbors, trace, cycles, reachability, graph |
 | `atlas_audit` | Quality scans: gaps (including `incomplete_atlas_entry`), smells, hotspots |
 | `atlas_admin` | Operations: bridge_list, reindex, flush |
 | `atlas_commit` | Post-edit writeback: records change rationale and updates file metadata |
+| `atlas_diff` | Compare two retained Atlas snapshots, timestamps, changelog IDs, or latest endpoints for one file |
+| `atlas_changelog_diff` | Diff from a changelog ID while inferring the file path |
+| `atlas_snapshot` | Show file content as Atlas knew it at a changelog, timestamp, or latest endpoint |
+| `atlas_worktree_status` | Compare live disk files with latest retained Atlas snapshots |
+| `atlas_worktree_diff` | Diff live disk files against latest retained Atlas snapshots |
 
 ## Quality Auditing
 
@@ -112,6 +121,7 @@ Pipeline phases:
 
 Search:
   BM25 full-text search via FTS5 over all metadata fields
+  Dense vector embedding hooks are present but disabled in standalone Atlas
 ```
 
 ## Data Model

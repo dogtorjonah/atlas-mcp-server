@@ -16,8 +16,8 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { AtlasRuntime } from '../types.ts';
-import { toolWithDescription } from './helpers.ts';
+import type { AtlasRuntime } from '../types.js';
+import { toolWithDescription } from './helpers.js';
 import {
   lookupSnapshot,
   lookupSnapshotRecord,
@@ -25,8 +25,8 @@ import {
   mapChangelogRecord,
   type AtlasDatabase,
   type AtlasChangelogRecord,
-} from '../db.ts';
-import type { SourceHighlight } from '../types.ts';
+} from '../db.js';
+import type { SourceHighlight } from '../types.js';
 
 // ── Types (Step 3a) ────────────────────────────────────────────────────────
 

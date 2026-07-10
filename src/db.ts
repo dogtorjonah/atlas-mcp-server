@@ -98,7 +98,7 @@ export interface AtlasChangelogInsertInput {
   created_at?: string | null;
 }
 
-export interface AtlasJonahMemoryInsertInput {
+export interface AtlasOperatorMemoryInsertInput {
   workspace: string;
   file_path: string;
   note: string;
@@ -1686,8 +1686,10 @@ export function insertAtlasChangelog(db: AtlasDatabase, input: AtlasChangelogIns
   return mapChangelogRecord(row);
 }
 
-export function insertAtlasJonahMemory(db: AtlasDatabase, input: AtlasJonahMemoryInsertInput): void {
+export function insertAtlasOperatorMemory(db: AtlasDatabase, input: AtlasOperatorMemoryInsertInput): void {
   db.prepare(
+    // Legacy storage table name retained for compatibility with migration
+    // 0012_jonah_memory.sql; API/docs call this feature operator_memory.
     `INSERT INTO atlas_jonah_memory (
       workspace, changelog_id, file_path, note, category, confidence, evidence,
       author_instance_id, author_engine, author_name, source, review_status,
@@ -3232,7 +3234,11 @@ export function openReadonlyAtlasBridgeDb(dbPath: string): AtlasDatabase | null 
   if (!fs.existsSync(dbPath)) return null;
   try {
     const db: AtlasDatabase = new Database(dbPath, { readonly: true }) as AtlasDatabase;
-    db.pragma('journal_mode = WAL');
+    try {
+      db.pragma('query_only = ON');
+    } catch {
+      // Some SQLite builds reject query_only on readonly handles; the handle is still read-only.
+    }
     loadSqliteVec(db);
     return db;
   } catch {

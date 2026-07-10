@@ -1,5 +1,5 @@
-import type { AtlasFileRecord } from '../types.ts';
-import type { NormalizedAtlasCommitPayload } from './commitPayload.ts';
+import type { AtlasFileRecord } from '../types.js';
+import type { NormalizedAtlasCommitPayload } from './commitPayload.js';
 
 export type AtlasCommitIdentityField = 'purpose' | 'blurb' | 'tags';
 export type AtlasCommitRequiredMetadataField = AtlasCommitIdentityField | 'source_highlights';

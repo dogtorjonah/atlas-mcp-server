@@ -204,6 +204,6 @@ export interface AtlasServerConfig {
 
 export interface AtlasRuntime {
   config: AtlasServerConfig;
-  db: import('./db.ts').AtlasDatabase;
+  db: import('./db.js').AtlasDatabase;
   server?: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer;
 }

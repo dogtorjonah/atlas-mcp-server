@@ -1,5 +1,29 @@
-import type { CompletenessScore } from '../completenessScore.ts';
-import type { AutoSyncDriftStats } from './hazardsAutoSync.ts';
+import type { AutoSyncDriftStats } from './hazardsAutoSync.js';
+
+type AtlasCompletenessTier = 'tiny' | 'small' | 'medium' | 'large' | 'huge';
+type AtlasCompletenessField =
+  | 'purpose'
+  | 'blurb'
+  | 'patterns'
+  | 'hazards'
+  | 'conventions'
+  | 'key_types'
+  | 'data_flows'
+  | 'public_api'
+  | 'source_highlights';
+
+export interface CompletenessScore {
+  tier: AtlasCompletenessTier;
+  loc: number;
+  required: AtlasCompletenessField[];
+  recommended: AtlasCompletenessField[];
+  filled: AtlasCompletenessField[];
+  missingRequired: AtlasCompletenessField[];
+  missingRecommended: AtlasCompletenessField[];
+  requiredFillRate: number;
+  overallFillRate: number;
+  rationale: string;
+}
 
 export type AtlasCommitResultStatus =
   | 'committed'

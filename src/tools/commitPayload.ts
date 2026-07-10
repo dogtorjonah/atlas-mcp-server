@@ -44,6 +44,7 @@ export interface NormalizedAtlasCommitPayload {
   data_flows?: string[];
   hazards?: string[];
   patterns?: string[];
+  tags?: string[];
   dependencies?: Record<string, unknown>;
   blurb?: string;
   source_highlights?: NormalizedAtlasCommitSourceHighlight[];
@@ -120,6 +121,7 @@ export const atlasCommitInputSchema = {
   dataFlows: stringListInputSchema.optional().describe('Compatibility alias for data_flows.'),
   hazards: stringListInputSchema.optional(),
   patterns: stringListInputSchema.optional(),
+  tags: stringListInputSchema.optional(),
   dependencies: z.record(z.unknown()).optional(),
   blurb: z.string().optional(),
   source_highlights: z.union([z.array(sourceHighlightLooseEntrySchema), z.record(z.unknown()), z.string()]).optional(),
@@ -252,6 +254,7 @@ const CANONICAL_OUTPUT_KEYS = [
   'data_flows',
   'hazards',
   'patterns',
+  'tags',
   'dependencies',
   'blurb',
   'source_highlights',
@@ -299,7 +302,7 @@ export function normalizeAtlasCommitPayload(input: Record<string, unknown>): Nor
   const purpose = toTrimmedString(payload.purpose);
   if (purpose) payload.purpose = purpose;
 
-  for (const key of ['patterns_added', 'patterns_removed', 'hazards_added', 'hazards_removed', 'conventions', 'key_types', 'data_flows', 'hazards', 'patterns'] as const) {
+  for (const key of ['patterns_added', 'patterns_removed', 'hazards_added', 'hazards_removed', 'conventions', 'key_types', 'data_flows', 'hazards', 'patterns', 'tags'] as const) {
     const normalized = toStringList(payload[key]);
     if (normalized) payload[key] = normalized;
   }

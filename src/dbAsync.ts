@@ -1,138 +1,183 @@
 import * as db from './db.js';
 import type { AtlasFileRecord, AtlasFileWitnessRecord } from './types.js';
 
-export async function getAtlasFileAsync(workspace: string, filePath: string): Promise<AtlasFileRecord | null> {
-  return db.getAtlasFile(workspace, filePath);
+export interface AtlasDbReadOptions {
+  dbPath: string;
+  cwd?: string;
 }
 
-export async function listAtlasFilesAsync(workspace: string): Promise<AtlasFileRecord[]> {
-  return db.listAtlasFiles(workspace);
+export type AtlasDbTarget = db.AtlasDatabase | AtlasDbReadOptions;
+
+function isAtlasDatabase(target: AtlasDbTarget): target is db.AtlasDatabase {
+  return typeof (target as { prepare?: unknown }).prepare === 'function';
 }
 
-export async function lookupSnapshotAsync(workspace: string, filePath: string, at: string | null): Promise<string | null> {
-  return db.lookupSnapshot(workspace, filePath, at);
+async function withAtlasDb<T>(target: AtlasDbTarget, fn: (atlasDb: db.AtlasDatabase) => T): Promise<T> {
+  if (isAtlasDatabase(target)) {
+    return fn(target);
+  }
+
+  const readonlyDb = db.openReadonlyAtlasBridgeDb(target.dbPath);
+  if (!readonlyDb) {
+    throw new Error(`Unable to open Atlas database for readonly access: ${target.dbPath}`);
+  }
+
+  try {
+    return fn(readonlyDb);
+  } finally {
+    readonlyDb.close();
+  }
 }
 
-export async function lookupSnapshotRecordAsync(workspace: string, filePath: string, at: string | null): Promise<any> {
-  return db.lookupSnapshotRecord(workspace, filePath, at);
+function requireWritableHandle(target: AtlasDbTarget): db.AtlasDatabase {
+  if (isAtlasDatabase(target)) {
+    return target;
+  }
+  throw new Error('This dbAsync operation requires an open AtlasDatabase handle.');
 }
 
-export async function listClusterFilesAsync(workspace: string, cluster: string | null): Promise<AtlasFileRecord[]> {
-  return db.listClusterFiles(workspace, cluster);
+export async function getAtlasFileAsync(workspace: string, filePath: string, target: AtlasDbTarget): Promise<AtlasFileRecord | null> {
+  return withAtlasDb(target, (atlasDb) => db.getAtlasFile(atlasDb, workspace, filePath));
 }
 
-export async function listPatternFilesAsync(workspace: string, pattern: string): Promise<AtlasFileRecord[]> {
-  return db.listPatternFiles(workspace, pattern);
+export async function listAtlasFilesAsync(workspace: string, target: AtlasDbTarget): Promise<AtlasFileRecord[]> {
+  return withAtlasDb(target, (atlasDb) => db.listAtlasFiles(atlasDb, workspace));
 }
 
-export async function aggregatePatternCountsAsync(workspace: string): Promise<any[]> {
-  return db.aggregatePatternCounts(workspace);
+export async function lookupSnapshotAsync(workspace: string, filePath: string, at: number | null, target: AtlasDbTarget): Promise<string | null> {
+  return withAtlasDb(target, (atlasDb) => db.lookupSnapshot(atlasDb, filePath, workspace, at));
 }
 
-export async function countDistinctPatternsAsync(workspace: string): Promise<number> {
-  return db.countDistinctPatterns(workspace);
+export async function lookupSnapshotRecordAsync(workspace: string, filePath: string, at: number | null, target: AtlasDbTarget): Promise<db.AtlasFileSnapshot | null> {
+  return withAtlasDb(target, (atlasDb) => db.lookupSnapshotRecord(atlasDb, filePath, workspace, at));
 }
 
-export async function listAtlasFileWitnessesAsync(workspace: string, filePath: string): Promise<AtlasFileWitnessRecord[]> {
-  return db.listAtlasFileWitnesses(workspace, filePath);
+export async function listClusterFilesAsync(workspace: string, cluster: string | null, target: AtlasDbTarget): Promise<AtlasFileRecord[]> {
+  return withAtlasDb(target, (atlasDb) => (
+    cluster == null ? db.listAtlasFiles(atlasDb, workspace) : db.listClusterFiles(atlasDb, workspace, cluster)
+  ));
 }
 
-export async function listSymbolIdentitiesAsync(workspace: string, filePath: string): Promise<any[]> {
-  return db.listSymbolIdentities(workspace, filePath);
+export async function listPatternFilesAsync(workspace: string, pattern: string, target: AtlasDbTarget, limit?: number): Promise<AtlasFileRecord[]> {
+  return withAtlasDb(target, (atlasDb) => db.listPatternFiles(atlasDb, workspace, pattern, limit));
 }
 
-export async function listImportsAsync(workspace: string, filePath: string): Promise<any[]> {
-  return db.listImports(workspace, filePath);
+export async function aggregatePatternCountsAsync(workspace: string, target: AtlasDbTarget, limit?: number): Promise<db.AtlasPatternCountEntry[]> {
+  return withAtlasDb(target, (atlasDb) => db.aggregatePatternCounts(atlasDb, workspace, limit));
 }
 
-export async function listImportedByAsync(workspace: string, filePath: string): Promise<any[]> {
-  return db.listImportedBy(workspace, filePath);
+export async function countDistinctPatternsAsync(workspace: string, target: AtlasDbTarget): Promise<number> {
+  return withAtlasDb(target, (atlasDb) => db.countDistinctPatterns(atlasDb, workspace));
 }
 
-export async function listImportEdgesAsync(workspace: string): Promise<any[]> {
-  return db.listImportEdges(workspace);
+export async function listAtlasFileWitnessesAsync(workspace: string, filePath: string, target: AtlasDbTarget, limit?: number): Promise<AtlasFileWitnessRecord[]> {
+  return withAtlasDb(target, (atlasDb) => db.listAtlasFileWitnesses(atlasDb, workspace, filePath, limit));
 }
 
-export async function listSymbolsAsync(workspace: string, filePath: string): Promise<any[]> {
-  return db.listSymbols(workspace, filePath);
+export async function listSymbolIdentitiesAsync(workspace: string, filePath: string, target: AtlasDbTarget): Promise<db.AtlasSymbolIdentityRecord[]> {
+  return withAtlasDb(target, (atlasDb) => db.listSymbolIdentities(atlasDb, workspace, filePath));
 }
 
-export async function listReferencesAsync(workspace: string, filePath: string): Promise<any[]> {
-  return db.listReferences(workspace, filePath);
+export async function listImportsAsync(workspace: string, filePath: string, target: AtlasDbTarget): Promise<string[]> {
+  return withAtlasDb(target, (atlasDb) => db.listImports(atlasDb, workspace, filePath));
 }
 
-export async function searchFtsAsync(workspace: string, query: string, limit?: number): Promise<any[]> {
-  return db.searchFts(workspace, query, limit);
+export async function listImportedByAsync(workspace: string, filePath: string, target: AtlasDbTarget): Promise<string[]> {
+  return withAtlasDb(target, (atlasDb) => db.listImportedBy(atlasDb, workspace, filePath));
 }
 
-export async function searchAtlasFilesAsync(workspace: string, query: string, limit?: number): Promise<any[]> {
-  return db.searchAtlasFiles(workspace, query, limit);
+export async function listImportEdgesAsync(workspace: string, target: AtlasDbTarget): Promise<db.AtlasImportEdgeRecord[]> {
+  return withAtlasDb(target, (atlasDb) => db.listImportEdges(atlasDb, workspace));
 }
 
-export async function searchVectorAsync(workspace: string, embedding: number[], limit?: number): Promise<any[]> {
-  return db.searchVector(workspace, embedding, limit);
+export async function listSymbolsAsync(workspace: string, target: AtlasDbTarget, filePath?: string): Promise<db.AtlasSymbolRecord[]> {
+  return withAtlasDb(target, (atlasDb) => db.listSymbols(atlasDb, workspace, filePath));
 }
 
-export async function getAtlasEmbeddingAsync(workspace: string, key: string, model: string): Promise<number[] | null> {
-  return db.getAtlasEmbedding(workspace, key, model);
+export async function listReferencesAsync(workspace: string, target: AtlasDbTarget, sourceFile?: string): Promise<db.AtlasReferenceRecord[]> {
+  return withAtlasDb(target, (atlasDb) => db.listReferences(atlasDb, workspace, sourceFile));
 }
 
-export async function queryAtlasChangelogAsync(workspace: string, query: any): Promise<any[]> {
-  return db.queryAtlasChangelog(workspace, query);
+export async function searchFtsAsync(workspace: string, query: string, target: AtlasDbTarget, limit?: number): Promise<db.AtlasSearchHit[]> {
+  return withAtlasDb(target, (atlasDb) => db.searchFts(atlasDb, workspace, query, limit));
 }
 
-export async function countAtlasChangelogAsync(workspace: string, query: any): Promise<number> {
-  return db.countAtlasChangelog(workspace, query);
+export async function searchAtlasFilesAsync(workspace: string, query: string, target: AtlasDbTarget, limit?: number): Promise<AtlasFileRecord[]> {
+  return withAtlasDb(target, (atlasDb) => db.searchAtlasFiles(atlasDb, workspace, query, limit));
 }
 
-export async function groupAtlasChangelogAsync(workspace: string, query: any): Promise<any[]> {
-  return db.groupAtlasChangelog(workspace, query);
+export async function searchVectorAsync(workspace: string, embedding: number[], target: AtlasDbTarget, limit?: number): Promise<db.AtlasSearchHit[]> {
+  return withAtlasDb(target, (atlasDb) => db.searchVector(atlasDb, workspace, embedding, limit));
 }
 
-export async function countAtlasChangelogGroupsAsync(workspace: string, query: any): Promise<number> {
-  return db.countAtlasChangelogGroups(workspace, query);
+export async function getAtlasEmbeddingAsync(workspace: string, filePath: string, target: AtlasDbTarget): Promise<number[] | null> {
+  return withAtlasDb(target, (atlasDb) => db.getAtlasEmbedding(atlasDb, workspace, filePath));
 }
 
-export async function timelineAtlasChangelogAsync(workspace: string, query: any): Promise<any[]> {
-  return db.timelineAtlasChangelog(workspace, query);
+export async function queryAtlasChangelogAsync(workspace: string, query: db.AtlasChangelogQuery, target: AtlasDbTarget): Promise<db.AtlasChangelogRecord[]> {
+  return withAtlasDb(target, (atlasDb) => db.queryAtlasChangelog(atlasDb, { ...query, workspace }));
 }
 
-export async function getFilePhaseAsync(workspace: string, filePath: string): Promise<number> {
-  return db.getFilePhase(workspace, filePath);
+export async function countAtlasChangelogAsync(workspace: string, query: db.AtlasChangelogQuery, target: AtlasDbTarget): Promise<db.AtlasChangelogStats> {
+  return withAtlasDb(target, (atlasDb) => db.countAtlasChangelog(atlasDb, { ...query, workspace }));
 }
 
-export async function atlasCrossrefCountAsync(workspace: string): Promise<number> {
-  return db.atlasCrossrefCount(workspace);
+export async function groupAtlasChangelogAsync(workspace: string, query: db.AtlasChangelogQuery, groupBy: string, target: AtlasDbTarget, limit?: number): Promise<db.AtlasChangelogGroupEntry[]> {
+  return withAtlasDb(target, (atlasDb) => db.groupAtlasChangelog(atlasDb, { ...query, workspace }, groupBy, limit));
 }
 
-export async function deleteAtlasFileAsync(workspace: string, filePath: string): Promise<void> {
-  return db.deleteAtlasFile(workspace, filePath);
+export async function countAtlasChangelogGroupsAsync(workspace: string, query: db.AtlasChangelogQuery, groupBy: string, target: AtlasDbTarget): Promise<number> {
+  return withAtlasDb(target, (atlasDb) => db.countAtlasChangelogGroups(atlasDb, { ...query, workspace }, groupBy));
 }
 
-export async function enqueueReextractAsync(workspace: string, filePath: string): Promise<void> {
-  return db.enqueueReextract(workspace, filePath);
+export async function timelineAtlasChangelogAsync(workspace: string, query: db.AtlasChangelogQuery, bucket: 'day' | 'week' | 'month', target: AtlasDbTarget): Promise<db.AtlasChangelogTimelineBucket[]> {
+  return withAtlasDb(target, (atlasDb) => db.timelineAtlasChangelog(atlasDb, { ...query, workspace }, bucket));
 }
 
-export async function upsertFileRecordAsync(workspace: string, file: any): Promise<void> {
-  return db.upsertFileRecord(workspace, file);
+export async function getFilePhaseAsync(workspace: string, filePath: string, currentHash: string, target: AtlasDbTarget): Promise<'none' | 'structure' | 'crossref'> {
+  return withAtlasDb(target, (atlasDb) => db.getFilePhase(atlasDb, workspace, filePath, currentHash));
 }
 
-export async function insertAtlasChangelogAsync(workspace: string, changelog: any): Promise<number> {
-  return db.insertAtlasChangelog(workspace, changelog);
+export async function atlasCrossrefCountAsync(workspace: string, target: AtlasDbTarget): Promise<number> {
+  return withAtlasDb(target, (atlasDb) => db.listReferences(atlasDb, workspace).length);
 }
 
-export async function markChangelogVerificationAsync(workspace: string, changelogId: number, status: string, evidence: string): Promise<void> {
-  return db.markChangelogVerification(workspace, changelogId, status, evidence);
+export async function deleteAtlasFileAsync(workspace: string, filePath: string, target: AtlasDbTarget): Promise<boolean> {
+  const atlasDb = requireWritableHandle(target);
+  return db.deleteAtlasFile(atlasDb, workspace, filePath);
 }
 
-export async function insertSnapshotAsync(workspace: string, filePath: string, content: string, hash: string): Promise<void> {
-  return db.insertSnapshot(workspace, filePath, content, hash);
+export async function enqueueReextractAsync(workspace: string, filePath: string, target: AtlasDbTarget): Promise<void> {
+  const atlasDb = requireWritableHandle(target);
+  db.enqueueReextract(atlasDb, workspace, filePath);
 }
 
-export async function pruneSnapshotsAsync(workspace: string, filePath: string, keepLimit?: number): Promise<void> {
-  return db.pruneSnapshots(workspace, filePath, keepLimit);
+export async function upsertFileRecordAsync(workspace: string, file: db.AtlasFileUpsertInput, target: AtlasDbTarget): Promise<void> {
+  const atlasDb = requireWritableHandle(target);
+  db.upsertFileRecord(atlasDb, { ...file, workspace });
 }
 
-export async function commitChangelogBatchAsync(workspace: string, changelog: any, snapshots: any[], files: any[], symbolIdentities: any[]): Promise<any> {
-  return db.commitChangelogBatch(workspace, changelog, snapshots, files, symbolIdentities);
+export async function insertAtlasChangelogAsync(workspace: string, changelog: db.AtlasChangelogInsertInput, target: AtlasDbTarget): Promise<number> {
+  const atlasDb = requireWritableHandle(target);
+  return db.insertAtlasChangelog(atlasDb, { ...changelog, workspace }).id;
+}
+
+export async function markChangelogVerificationAsync(workspace: string, changelogId: number, status: string, evidence: string, target: AtlasDbTarget): Promise<number> {
+  const atlasDb = requireWritableHandle(target);
+  const result = db.updateChangelogVerification(atlasDb, workspace, {
+    changelogIds: [changelogId],
+    status,
+    notes: evidence,
+  });
+  return result.updated;
+}
+
+export async function insertSnapshotAsync(workspace: string, filePath: string, content: string, changelogId: number | null, target: AtlasDbTarget): Promise<db.AtlasFileSnapshot | null> {
+  const atlasDb = requireWritableHandle(target);
+  return db.insertSnapshot(atlasDb, filePath, workspace, content, changelogId);
+}
+
+export async function pruneSnapshotsAsync(workspace: string, filePath: string, target: AtlasDbTarget, keepLimit?: number): Promise<number> {
+  const atlasDb = requireWritableHandle(target);
+  return db.pruneSnapshots(atlasDb, filePath, workspace, keepLimit);
 }

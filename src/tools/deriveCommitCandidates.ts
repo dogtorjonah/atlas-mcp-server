@@ -16,8 +16,8 @@
  * I/O-free and trivially unit-testable.
  */
 
-import type { AtlasFileRecord } from '../types.ts';
-import type { AtlasCommitRequiredMetadataField } from './commitIdentityValidation.ts';
+import type { AtlasFileRecord } from '../types.js';
+import type { AtlasCommitRequiredMetadataField } from './commitIdentityValidation.js';
 
 const AREA_MAP: Record<string, string> = {
   relay: 'relay', app: 'app', 'app-solid': 'app-solid', packages: 'package',
@@ -114,7 +114,7 @@ export function clusterFeature(cluster: string | null | undefined): string {
   const raw = String(cluster);
   const segs = raw.startsWith('dir/') ? raw.slice(4).split('-') : raw.split('/');
   for (let i = segs.length - 1; i >= 0; i--) {
-    const seg = kebab(segs[i]);
+    const seg = kebab(segs[i] ?? '');
     if (seg && seg.length >= 3 && !CLUSTER_STOP.has(seg)) return seg;
   }
   return '';
@@ -127,7 +127,7 @@ export function deriveTags(
 ): string[] {
   const tags = new Set<string>();
   const parts = filePath.split('/');
-  const top = parts[0];
+  const top = parts[0] ?? 'source';
   tags.add(AREA_MAP[top] || top);
   const p = filePath;
   if (/^relay\/src\/atlas\/tools\//.test(p)) tags.add('atlas-tool');
@@ -143,7 +143,7 @@ export function deriveTags(
   if (/\/api\//.test(p)) tags.add('api-route');
   if (/-sidecar(\/|$)/.test(p)) tags.add('sidecar');
   if (/\/hooks\//.test(p)) tags.add('react-hook');
-  const base = parts[parts.length - 1];
+  const base = parts[parts.length - 1] ?? filePath;
   if (/\.test\.tsx?$/.test(base)) tags.add('test');
   if (/\.sql$/.test(base) || /migrations?\//.test(p)) tags.add('migration');
   if (base === 'route.ts' || base === 'route.tsx') tags.add('route');
@@ -196,8 +196,9 @@ export function findExportSites(source: string): ExportSite[] {
   const lines = source.split('\n');
   const sites: ExportSite[] = [];
   for (let i = 0; i < lines.length; i++) {
-    const m = EXPORT_DECL.exec(lines[i]);
-    if (m) sites.push({ name: m[2], line: i + 1 });
+    const m = EXPORT_DECL.exec(lines[i] ?? '');
+    const name = m?.[2];
+    if (name) sites.push({ name, line: i + 1 });
   }
   return sites;
 }
@@ -209,11 +210,14 @@ export function deriveSourceHighlightRanges(source: string): DerivedSourceHighli
   if (sites.length === 0) return [];
   const ranges: DerivedSourceHighlight[] = [];
   for (let i = 0; i < sites.length; i++) {
-    const start = sites[i].line;
-    const nextStart = i + 1 < sites.length ? sites[i + 1].line - 1 : totalLines;
+    const site = sites[i];
+    if (!site) continue;
+    const nextSite = sites[i + 1];
+    const start = site.line;
+    const nextStart = nextSite ? nextSite.line - 1 : totalLines;
     const end = Math.min(nextStart, start + HIGHLIGHT_WINDOW, totalLines);
     if (end >= start) {
-      ranges.push({ label: sites[i].name, start_line: start, end_line: end });
+      ranges.push({ label: site.name, start_line: start, end_line: end });
     }
   }
   return ranges.slice(0, MAX_HIGHLIGHTS);

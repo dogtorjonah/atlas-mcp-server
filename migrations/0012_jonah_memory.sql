@@ -1,10 +1,15 @@
--- Jonah candidate memory inbox for atlas_commit.
+-- Operator candidate memory inbox for atlas_commit.
 --
 -- This table is deliberately adjacent to Atlas changelog rows rather than
 -- folded into atlas_files. Notes here are review_status='candidate' by default:
--- they capture repeated, evidence-backed observations about Jonah's preferences,
+-- they capture repeated, evidence-backed observations about the operator's preferences,
 -- workflow instincts, boundaries, corrections, and project taste without
 -- treating one agent's inference as canon.
+--
+-- Compatibility note: the table/index names retain the original
+-- atlas_jonah_memory spelling because this migration filename may already be
+-- recorded in existing standalone Atlas DBs. New user-facing APIs and docs
+-- should refer to this feature as operator_memory / operator memory.
 --
 -- dedupe_key is indexed but not unique. Repetition is useful signal for later
 -- consolidation/ranking, while the raw evidence stays available for review.

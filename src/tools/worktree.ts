@@ -11,16 +11,27 @@ import { lstat, readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { AtlasRuntime, SourceHighlight } from '../types.ts';
+import type { AtlasRuntime, SourceHighlight } from '../types.js';
 import {
   getAtlasFileAsync,
   listAtlasFilesAsync,
   lookupSnapshotAsync,
   lookupSnapshotRecordAsync,
-} from '../dbAsync.ts';
-import { coercedOptionalBoolean } from '../../zodHelpers.ts';
-import { annotateWithHighlights, computeUnifiedDiff, parseDiffStat, type DiffStat } from './diff.ts';
-import { toolWithDescription } from './helpers.ts';
+} from '../dbAsync.js';
+import { annotateWithHighlights, computeUnifiedDiff, parseDiffStat, type DiffStat } from './diff.js';
+import { toolWithDescription } from './helpers.js';
+
+const coercedOptionalBoolean = z.preprocess((value) => {
+  if (value == null || value === '') return undefined;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
+  }
+  return value;
+}, z.boolean().optional());
 
 export const atlasWorktreeStatusInputSchema = z.object({
   file_path: z.string().min(1).optional().describe('Optional file or directory path to check. Defaults to all Atlas-indexed files.'),

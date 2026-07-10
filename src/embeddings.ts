@@ -7,13 +7,12 @@ import type {
 import {
   listAllAtlasChangelog,
   listAtlasFiles,
-  replaceSourceChunks,
   upsertChangelogEmbedding,
   upsertEmbedding,
   upsertSourceChunkEmbedding,
 } from './db.js';
 import type { AtlasFileRecord, AtlasServerConfig, AtlasSourceChunk } from './types.js';
-import { buildEmbeddingInput, buildSourceChunks } from './pipeline/shared.js';
+import { buildEmbeddingInput } from './pipeline/shared.js';
 
 export const DEFAULT_EMBED_CONFIG = {
   model: 'onnx-community/bge-small-en-v1.5-ONNX',
@@ -22,14 +21,14 @@ export const DEFAULT_EMBED_CONFIG = {
   batchSize: 16,
 };
 
-export async function embedBatch(texts: string[], opts?: any): Promise<number[][]> {
-  console.warn('[atlas] embeddings: embedBatch stub called - local dense retrieval is a monorepo-only feature');
-  return [];
+const STANDALONE_EMBEDDINGS_UNAVAILABLE = 'Standalone Atlas does not ship a dense embedding provider yet; search remains BM25/FTS-only.';
+
+export async function embedBatch(_texts: string[], _opts?: unknown): Promise<number[][]> {
+  throw new Error(STANDALONE_EMBEDDINGS_UNAVAILABLE);
 }
 
-export async function embedQuery(query: string, config?: any): Promise<number[]> {
-  console.warn('[atlas] embeddings: embedQuery stub called - local dense retrieval is a monorepo-only feature');
-  return new Array(384).fill(0);
+export async function embedQuery(_query: string, _config?: unknown): Promise<number[]> {
+  throw new Error(STANDALONE_EMBEDDINGS_UNAVAILABLE);
 }
 
 type AtlasEmbeddingConfigSource = Pick<AtlasServerConfig, 'embeddingModel' | 'embeddingDimensions'>;
@@ -100,7 +99,7 @@ function recordEmbeddingHashes(
 }
 
 export function areAtlasEmbeddingsEnabled(): boolean {
-  return process.env.VOXXO_ATLAS_EMBEDDINGS === '1';
+  return false;
 }
 
 export function getAtlasEmbeddingConfig(config: AtlasEmbeddingConfigSource) {
@@ -114,28 +113,25 @@ export function getAtlasEmbeddingConfig(config: AtlasEmbeddingConfigSource) {
 export function buildAtlasChangelogEmbeddingInput(changelog: AtlasChangelogRecord): string {
   return [
     changelog.file_path,
-    changelog.blurb,
-    changelog.purpose,
-    changelog.tags,
-    changelog.changelog_entry,
+    changelog.summary,
+    changelog.author_name ?? '',
+    changelog.author_engine ?? '',
   ].filter(Boolean).join('\n');
 }
 
 export function buildAtlasSourceChunkEmbeddingInput(chunk: AtlasSourceChunk): string {
   return [
-    chunk.filePath,
     chunk.label,
     chunk.content,
-  ].filter((part) => part.trim().length > 0).join('\n');
+  ].filter((part): part is string => typeof part === 'string' && part.trim().length > 0).join('\n');
 }
 
 export async function embedAtlasQueryText(
   query: string,
   config: AtlasEmbeddingConfigSource,
 ): Promise<number[]> {
-  if (!areAtlasEmbeddingsEnabled()) {
-    throw new Error('[atlas] local vector embeddings disabled; set VOXXO_ATLAS_EMBEDDINGS=1 to enable');
-  }
+  void query;
+  void config;
   const embedding = await embedQuery(query, getAtlasEmbeddingConfig(config));
   return Array.from(embedding);
 }
@@ -182,9 +178,14 @@ export async function refreshAtlasSourceChunkEmbeddings(
   ensureEmbeddingHashTable(db);
   const savedHashes = loadEmbeddingHashes(db, 'source_chunk');
   const recordMap = new Map<string, AtlasSourceChunkRecord>();
-  const dbChunks = db.prepare('SELECT id, label, start_line, end_line FROM atlas_source_chunks WHERE file_id = ?').all(file.id) as AtlasSourceChunkRecord[];
+  const dbChunks = db.prepare(
+    `SELECT id, workspace, file_id, file_path, kind, label, start_line AS startLine,
+            end_line AS endLine, content, text_hash AS textHash
+     FROM atlas_source_chunks
+     WHERE file_id = ?`,
+  ).all(file.id) as AtlasSourceChunkRecord[];
   for (const c of dbChunks) {
-    recordMap.set(`${c.label}:${c.start_line}:${c.end_line}`, c);
+    recordMap.set(`${c.label}:${c.startLine}:${c.endLine}`, c);
   }
 
   const toEmbed: Array<{ chunk: AtlasSourceChunk; text: string; hash: string; recordId: number }> = [];
@@ -281,14 +282,20 @@ export async function backfillAtlasEmbeddings(
     const toEmbed: Array<{ chunk: AtlasSourceChunk; text: string; hash: string; recordId: number }> = [];
 
     for (const file of filtered) {
-      const fileChunks = db.prepare('SELECT id, label, content, start_line, end_line FROM atlas_source_chunks WHERE file_id = ?').all(file.id) as AtlasSourceChunkRecord[];
+      const fileChunks = db.prepare(
+        `SELECT id, workspace, file_id, file_path, kind, label, start_line AS startLine,
+                end_line AS endLine, content, text_hash AS textHash
+         FROM atlas_source_chunks
+         WHERE file_id = ?`,
+      ).all(file.id) as AtlasSourceChunkRecord[];
       for (const rec of fileChunks) {
         const chunk: AtlasSourceChunk = {
-          filePath: file.file_path,
+          kind: rec.kind,
           label: rec.label,
           content: rec.content,
-          startLine: rec.start_line,
-          endLine: rec.end_line,
+          startLine: rec.startLine,
+          endLine: rec.endLine,
+          textHash: rec.textHash,
         };
         const text = buildAtlasSourceChunkEmbeddingInput(chunk);
         const hash = hashText(text);

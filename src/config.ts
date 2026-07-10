@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AtlasServerConfig } from './types.js';
 
+const DEFAULT_EMBEDDING_MODEL = 'onnx-community/bge-small-en-v1.5-ONNX';
+const DEFAULT_EMBEDDING_DIMENSIONS = 384;
+
 export interface AtlasConfigDefaults {
   sourceRoot?: string;
   dbPath?: string;
@@ -93,6 +96,16 @@ export function loadAtlasConfig(
   const workspace = readArgValue(argv, '--workspace') ?? readEnv('ATLAS_WORKSPACE') ?? defaults.workspace ?? path.basename(sourceRoot).toLowerCase();
   const dbPath = readArgValue(argv, '--db') ?? readEnv('ATLAS_DB_PATH') ?? defaults.dbPath ?? path.join(cwd, '.atlas', 'atlas.sqlite');
   const concurrency = readInt(readArgValue(argv, '--concurrency') ?? readEnv('ATLAS_CONCURRENCY'), 10);
+  const embeddingModel = readArgValue(argv, '--embedding-model')
+    ?? readEnv('ATLAS_EMBEDDING_MODEL')
+    ?? atlasEnv.ATLAS_EMBEDDING_MODEL
+    ?? DEFAULT_EMBEDDING_MODEL;
+  const embeddingDimensions = readInt(
+    readArgValue(argv, '--embedding-dimensions')
+      ?? readEnv('ATLAS_EMBEDDING_DIMENSIONS')
+      ?? atlasEnv.ATLAS_EMBEDDING_DIMENSIONS,
+    DEFAULT_EMBEDDING_DIMENSIONS,
+  );
 
   return {
     workspace,
@@ -100,5 +113,7 @@ export function loadAtlasConfig(
     dbPath,
     concurrency,
     sqliteVecExtension: readArgValue(argv, '--sqlite-vec-extension') ?? readEnv('ATLAS_SQLITE_VEC_EXTENSION') ?? '',
+    embeddingModel,
+    embeddingDimensions,
   };
 }

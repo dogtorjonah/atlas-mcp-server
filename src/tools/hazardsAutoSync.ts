@@ -138,7 +138,7 @@
  * the side-effecting log emission is the caller's responsibility.
  */
 
-import type { AtlasHazardWithRange } from '../types.ts';
+import type { AtlasHazardWithRange } from '../types.js';
 
 /**
  * Wave 53 — counters surfacing how much drift autoSyncHazardsColumns

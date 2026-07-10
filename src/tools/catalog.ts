@@ -1,6 +1,6 @@
-import type { AtlasFileRecord, AtlasRuntime } from '../types.ts';
-import { listAtlasFilesAsync } from '../dbAsync.ts';
-import { discoverWorkspaces, normalizeCurrentWorkspaceAlias } from './bridge.ts';
+import type { AtlasFileRecord, AtlasRuntime } from '../types.js';
+import { listAtlasFilesAsync } from '../dbAsync.js';
+import { discoverWorkspaces } from './bridge.js';
 
 export interface AtlasCatalogArgs {
   workspace?: string;
@@ -34,7 +34,7 @@ interface CatalogEntry {
 
 interface RuntimeDbContext {
   workspace: string;
-  dbPath: string | undefined;
+  dbPath: string;
   cwd: string;
 }
 
@@ -77,16 +77,23 @@ function resolveCatalogField(args: AtlasCatalogArgs): CatalogField {
   return args.field ?? args.target ?? 'blurb';
 }
 
+function normalizeCurrentWorkspaceAlias(currentWorkspace: string, workspace?: string): string {
+  const target = workspace?.trim();
+  if (!target || target === '.' || target === 'current') {
+    return currentWorkspace;
+  }
+  return target;
+}
+
 function fallbackField(field: CatalogField): CatalogField {
   return field === 'blurb' ? 'purpose' : 'blurb';
 }
 
 function resolveDbContext(runtime: AtlasRuntime, workspace?: string): RuntimeDbContext | null {
   const targetWorkspace = normalizeCurrentWorkspaceAlias(
-    runtime.config.sourceRoot,
     runtime.config.workspace,
     workspace,
-  ) ?? runtime.config.workspace;
+  );
 
   if (targetWorkspace === runtime.config.workspace) {
     return {

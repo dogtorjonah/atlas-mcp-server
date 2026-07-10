@@ -7,7 +7,7 @@ import { toolWithDescription } from './helpers.js';
 import { trackQuery } from '../queryLog.js';
 import { discoverWorkspaces, resolveWorkspaceDb } from './bridge.js';
 
-interface RankedResult {
+export interface RankedResult {
   file_path: string;
   score: number;
   record: AtlasFileRecord;
@@ -32,7 +32,7 @@ function formatResult(result: RankedResult): string {
 // Primary path: BM25 full-text search via FTS5.
 // No API key required — search quality improves organically as agents
 // populate metadata via atlas_commit.
-function searchOneWorkspace(
+export function searchOneWorkspace(
   db: AtlasDatabase,
   ws: string,
   query: string,
@@ -146,7 +146,7 @@ export async function runSearchTool(runtime: AtlasRuntime, { query, limit, works
 export function registerSearchTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(
     'atlas_search',
-    'Search the codebase atlas using natural language. Uses BM25 full-text search over file purposes, patterns, and descriptions, with optional vector fusion when embeddings are available. The index grows organically as agents fill in metadata via atlas_commit. Best for: "where does X happen?", "which files handle Y?", "find code related to Z". Supports cross-workspace search. No API key required.',
+    'Search the codebase atlas using natural language. Uses BM25 full-text search over file purposes, patterns, and descriptions; standalone dense vectors are disabled until a real embedding provider is wired. The index grows organically as agents fill in metadata via atlas_commit. Best for: "where does X happen?", "which files handle Y?", "find code related to Z". Supports cross-workspace search. No API key required.',
     {
       query: z.string().min(1),
       limit: z.number().int().min(1).max(30).optional(),
