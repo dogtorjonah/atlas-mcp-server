@@ -60,7 +60,7 @@ function trimOneLine(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
-/** rail-e0eb24f7 s11: normalized path_prefix — posix separators, no leading './'. */
+/** Normalize path_prefix to POSIX separators without a leading './'. */
 function resolvePathPrefix(args: AtlasCatalogArgs): string | null {
   const raw = (args.path_prefix ?? args.pathPrefix)?.trim();
   if (!raw) return null;

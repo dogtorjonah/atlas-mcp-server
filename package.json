@@ -5,23 +5,37 @@
   "description": "Standalone MCP server for the Voxxo codebase atlas.",
   "license": "AGPL-3.0-only",
   "main": "dist/index.js",
+  "files": [
+    "dist",
+    "migrations/*.sql",
+    "README.md",
+    "ARCHITECTURE.md",
+    "PUBLIC_API.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "exports": {
     ".": "./dist/index.js",
     "./db": "./dist/db.js",
     "./types": "./dist/types.js",
     "./paths": "./dist/paths.js",
-    "./pipeline": "./dist/pipeline/index.js"
+    "./pipeline": "./dist/pipeline/index.js",
+    "./persistence": "./dist/persistence/index.js",
+    "./indexing": "./dist/indexing/index.js"
   },
   "bin": {
     "atlas": "./dist/server.js",
     "atlas-mcp": "./dist/server.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp -r src/pipeline/prompts dist/pipeline/prompts",
+    "build": "node scripts/build.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch src/server.ts",
     "init": "tsx src/server.ts init",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test": "node --import tsx --test src/__tests__/*.test.ts",
+    "test:package": "node scripts/package-smoke.mjs",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

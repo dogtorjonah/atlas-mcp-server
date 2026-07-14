@@ -64,6 +64,7 @@ export interface SyntaxNodeLike {
   childCount: number;
   children: SyntaxNodeLike[];
   namedChildren: SyntaxNodeLike[];
+  hasError?: boolean;
   childForFieldName(name: string): SyntaxNodeLike | null;
   parent: SyntaxNodeLike | null;
 }

@@ -255,7 +255,7 @@ export interface AtlasFileUpsertInput {
   data_flows?: string[];
   key_types?: unknown[];
   hazards?: string[];
-  /** Wave 44 — optional structured hazards with line ranges, written to the parallel hazards_with_ranges column (migrations/0011). When omitted, the column defaults to '[]' so existing callers are unaffected. */
+  /** Optional ranged hazards stored in parallel with the legacy text-only array. */
   hazards_with_ranges?: AtlasHazardWithRange[];
   conventions?: string[];
   cross_refs?: AtlasCrossRefs | null;
@@ -515,7 +515,15 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
     const sqlWithoutVec0 = sql.replace(vec0Pattern, '');
 
     try {
-      db.exec(sqlWithoutVec0);
+      // Keep the executable migration body and its history row atomic. Optional
+      // vector tables are attempted afterward and tracked as capability state;
+      // every durable non-vector schema change either commits with its filename
+      // or rolls back completely.
+      const applyMigration = db.transaction(() => {
+        db.exec(sqlWithoutVec0);
+        db.prepare('INSERT INTO atlas_schema_migrations (filename) VALUES (?)').run(filename);
+      });
+      applyMigration();
     } catch (err) {
       // Bootstrap tolerance: existing DBs won't have the tracking table yet,
       // so we may re-run migrations whose effects already exist (e.g., ALTER TABLE
@@ -536,7 +544,6 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
       }
     }
 
-    db.prepare('INSERT INTO atlas_schema_migrations (filename) VALUES (?)').run(filename);
   }
 
   // If the extension loaded, verify the vec0 table is functional and heal if needed
@@ -548,31 +555,23 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
 
   backfillSymbolsAndReferencesFromAtlasFiles(db);
 
-  // Wave 49 — atlas_runtime_flags inline-bootstrap table + one-shot
-  // rebuildFts trigger that heals the Wave 48 stale-FTS caveat documented
-  // at ftsDocumentForRecord (lines ~659-666). Pre-Wave-48 rows in
-  // atlas_files with hazards_with_ranges populated were NOT FTS-indexed
-  // against the structured-column text (only legacy hazards[]). Wave 48
-  // was forward-only — existing rows wait for next upsertFileRecord OR
-  // explicit rebuildFts. Wave 49 promotes the documented caveat to a
-  // shipped heal by triggering rebuildFts exactly once after the Wave 48
-  // contract is in place, so the structured-column text reaches FTS for
-  // the entire corpus immediately on next open.
+  // Bootstrap a durable runtime flag for the one-time FTS rebuild required
+  // by databases created before structured hazard text entered the FTS
+  // document. New and upgraded databases therefore expose the same search
+  // coverage without requiring every atlas_files row to be upserted first.
   //
   // Why inline-bootstrap instead of a migration file? The
   // atlas_schema_migrations table itself is created INLINE at lines
   // 392-395 — direct precedent. Migration files imply a schema delta to
-  // existing tables (atlas_files columns, etc.), but Wave 49 only adds a
+  // existing tables (atlas_files columns, etc.), but this only adds a
   // NEW runtime-state tracking table with CREATE TABLE IF NOT EXISTS, so
   // a migration would be both unnecessary and semantically misleading
   // (the SQL in the migration file would have to re-run safely on every
   // open — exactly what bootstrap is for). Adding the runtime-flag table
-  // here also keeps the atlas_schema_migrations test pin
-  // (atlasMigrationDir.test.ts) untouched — Wave 49 introduces no new
-  // .sql file for that test to track.
+  // here also avoids pretending that a new numbered schema migration exists.
   //
   // Why INSERT OR IGNORE on the flag insert (not plain INSERT)? Concurrent
-  // multi-process opens of the same DB (e.g. two relays opening the same
+  // multi-process opens of the same DB (for example, two Atlas hosts opening
   // .atlas/atlas.sqlite) would both observe an absent flag, both attempt
   // rebuildFts, and the second to INSERT would conflict on the PRIMARY KEY.
   // INSERT OR IGNORE handles this gracefully — the second flag insert
@@ -593,24 +592,24 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
     applied_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
 
-  const wave48FtsFlagApplied = db.prepare(
+  const hazardsFtsRebuildApplied = db.prepare(
     'SELECT 1 FROM atlas_runtime_flags WHERE flag_name = ?',
   ).get(FTS_HAZARDS_REBUILD_FLAG);
 
-  if (!wave48FtsFlagApplied) {
+  if (!hazardsFtsRebuildApplied) {
     try {
       const fileCountRow = db.prepare('SELECT COUNT(*) AS n FROM atlas_files').get() as { n: number };
       console.log(
-        `[atlas] Wave 49: rebuilding FTS for ${fileCountRow.n} file(s) to index hazards_with_ranges.text (one-shot)`,
+        `[atlas] Rebuilding FTS for ${fileCountRow.n} file(s) to index structured hazard text (one-time upgrade)`,
       );
       rebuildFts(db);
       db.prepare(
         'INSERT OR IGNORE INTO atlas_runtime_flags (flag_name) VALUES (?)',
       ).run(FTS_HAZARDS_REBUILD_FLAG);
-      console.log('[atlas] Wave 49: FTS rebuild complete, runtime flag set');
+      console.log('[atlas] Structured-hazard FTS rebuild complete; upgrade flag recorded');
     } catch (err) {
       console.warn(
-        `[atlas] Wave 49 FTS rebuild failed: ${err instanceof Error ? err.message : String(err)} — will retry on next open`,
+        `[atlas] Structured-hazard FTS rebuild failed: ${err instanceof Error ? err.message : String(err)} — will retry on next open`,
       );
     }
   }
@@ -833,20 +832,16 @@ export function prepareFtsQuery(raw: string): string {
 }
 
 function ftsDocumentForRecord(record: AtlasFileRecord): Record<string, string> {
-  // Wave 48 — Phase 1.5 FTS indexing of hazards_with_ranges.text. Builds the
-  // `hazards` FTS column from the UNION of legacy `record.hazards: string[]`
-  // AND structured `record.hazards_with_ranges[].text`, deduplicated by text
-  // equality via Set. Pre-Wave-48 the hazards FTS column ONLY indexed the
-  // legacy column — agents who populated ONLY hazards_with_ranges (the future
-  // post-backfill state) would silently lose FTS matchability on hazard text.
+  // Build the `hazards` FTS field from the union of the legacy text-only
+  // column and structured hazard text. This keeps every stored hazard
+  // searchable regardless of which representation a writer supplied.
   //
   // Why union-into-existing-column instead of a separate hazards_with_ranges
   // FTS column? (a) Bounded single-file change — no migration 0012 DROP +
   // recreate atlas_fts. (b) The query path `hazards:foo` column-name syntax
-  // already works against the unioned text without changes. (c) The Wave 44
-  // parallel-storage supersession contract is a RENDER-side decision (Waves
-  // 45/46a/46b/47a/47b — structured supersedes legacy in output); the FTS
-  // side wants the OPPOSITE — maximum matchability across both columns to
+  // already works against the unioned text without changes. (c) Renderers
+  // may prefer structured entries, while the FTS side wants maximum
+  // matchability across both columns to
   // surface a file regardless of which column the populating agent chose.
   //
   // Dedupe rationale: the parallel-storage convention OFTEN duplicates the
@@ -855,20 +850,8 @@ function ftsDocumentForRecord(record: AtlasFileRecord): Record<string, string> {
   // double-weight the duplicated text. Set-based equality on the text value
   // (whitespace-trimmed) collapses identical entries to one.
   //
-  // Stale-FTS caveat: existing rows that have hazards_with_ranges populated
-  // do NOT get re-indexed by this change alone — populateFts is only called
-  // on upsertFileRecord (via upsertScanRecord at db.ts:2129 / upsert path at
-  // db.ts:2506). Existing rows will pick up the new FTS document the next
-  // time they are upserted, OR when rebuildFts(db) is called explicitly.
-  // Wave 48 is deliberately forward-only — a backfill rebuildFts pass is
-  // deferred (would be a future bounded wave triggering rebuildFts on next
-  // openAtlasDatabase via a one-shot meta flag).
-  //
-  // Closes the natural Wave 44-48 arc: schema (44) → snippet/lookup/brief
-  // upstream rendering (45/46a/47a) → snippet/lookup/brief helper-hint
-  // emission (45/46b/47b) → FTS indexing (48). Post-Wave-48, the structured
-  // hazards_with_ranges column reaches ALL 4 reader surfaces: snippet hints,
-  // lookup hints + rendering, brief hints + rendering, AND FTS search.
+  // Existing databases are rebuilt once during openAtlasDatabase; subsequent
+  // upserts keep individual rows current through populateFts.
   const hazardsUnion = new Set<string>();
   for (const text of record.hazards) {
     const trimmed = typeof text === 'string' ? text.trim() : '';
@@ -1496,12 +1479,9 @@ export function populateChangelogFts(db: AtlasDatabase, changelogId: number): vo
 }
 
 /**
- * Wave 49 — runtime flag name for the one-shot rebuildFts trigger that
- * heals the Wave 48 stale-FTS caveat. Exported for test access; production
- * callers should not reference this directly (the trigger fires inside
- * openAtlasDatabase). Stored as a row in the atlas_runtime_flags
- * inline-bootstrap table — see openAtlasDatabase at db.ts:~445 for the
- * trigger logic.
+ * Runtime flag for the one-time structured-hazard FTS rebuild. Exported for
+ * tests; normal callers receive the upgrade automatically when opening a
+ * database.
  */
 export const FTS_HAZARDS_REBUILD_FLAG = 'fts_hazards_with_ranges_rebuild';
 
@@ -1563,9 +1543,8 @@ export interface AtlasPatternCountEntry {
 }
 
 /**
- * Pattern → file-count aggregation for the patterns catalog (rail-e0eb24f7
- * s6). Count-desc ordering surfaces the most-established conventions first
- * — the alphabetical name dump it replaces buried them; ties break
+ * Pattern → file-count aggregation for the patterns catalog. Count-desc
+ * ordering surfaces the most-established conventions first; ties break
  * alphabetically for stable output.
  */
 export function aggregatePatternCounts(db: AtlasDatabase, workspace: string, limit?: number): AtlasPatternCountEntry[] {
@@ -1688,9 +1667,7 @@ export function insertAtlasChangelog(db: AtlasDatabase, input: AtlasChangelogIns
 
 export function insertAtlasOperatorMemory(db: AtlasDatabase, input: AtlasOperatorMemoryInsertInput): void {
   db.prepare(
-    // Legacy storage table name retained for compatibility with migration
-    // 0012_jonah_memory.sql; API/docs call this feature operator_memory.
-    `INSERT INTO atlas_jonah_memory (
+    `INSERT INTO atlas_operator_memory (
       workspace, changelog_id, file_path, note, category, confidence, evidence,
       author_instance_id, author_engine, author_name, source, review_status,
       dedupe_key, created_at
@@ -1904,7 +1881,7 @@ export function queryAtlasChangelog(db: AtlasDatabase, filters: AtlasChangelogQu
 
   const limit = Math.max(1, Math.min(filters.limit ?? 20, 2000));
   const offset = Math.max(0, filters.offset ?? 0);
-  // rail-e0eb24f7 s5: 'relevance' ranks FTS matches by bm25 (ascending =
+  // 'relevance' ranks FTS matches by bm25 (ascending =
   // best match first; created_at DESC tiebreak). Only valid when the FTS
   // join is actually present — without a query (or when prepareFtsQuery
   // rejected it) relevance degrades to the date-desc default instead of
@@ -3202,6 +3179,12 @@ export function deleteAtlasFile(db: AtlasDatabase, workspace: string, filePath: 
   // Clean up import edges
   db.prepare('DELETE FROM import_edges WHERE workspace = ? AND (source_file = ? OR target_file = ?)').run(workspace, filePath, filePath);
 
+  // References retain denormalized source/target paths even when symbol ids are
+  // absent, so deleting symbols alone cannot remove every stale graph edge.
+  db.prepare(
+    'DELETE FROM "references" WHERE workspace = ? AND (source_file = ? OR target_file = ?)',
+  ).run(workspace, filePath, filePath);
+
   // Clean up symbols
   db.prepare('DELETE FROM symbols WHERE workspace = ? AND file_path = ?').run(workspace, filePath);
 
@@ -3212,20 +3195,13 @@ export function deleteAtlasFile(db: AtlasDatabase, workspace: string, filePath: 
 }
 
 // ---------------------------------------------------------------------------
-// Bridge readonly open (step 31 — cross-workspace bridge.ts boundary)
+// Readonly bridge database handles
 // ---------------------------------------------------------------------------
 
 /**
- * Open a readonly handle to an atlas DB at `dbPath`, intended for the
- * cross-workspace bridge pool in atlas/tools/bridge.ts. Sets WAL pragma and
- * loads sqlite-vec via the existing private loader. Does NOT use the
- * singleton connection cache — the bridge pool owns the lifetime of these
- * handles (closeBridgeDb evicts them).
- *
- * This helper exists so atlas/tools/bridge.ts can drop its direct
- * `import Database from 'better-sqlite3'` (which would trip the
- * noSyncOnEventLoop guard at that path) and route the actual open through
- * this file, which is allowlisted under workerPool/handlers/*.ts.
+ * Open an uncached readonly Atlas database handle at `dbPath`. The caller
+ * owns the handle lifetime, which keeps bridge pools independent from the
+ * primary writable connection cache.
  *
  * Returns null on missing path or open failure — bridge.openBridgeDb relies
  * on the null signal to skip sibling repos with broken atlas dbs silently.

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "name": "small",
+  "workspace": "fixture-small",
+  "clock": "2025-01-02T03:04:05.000Z",
+  "source_files": [
+    "migrations/0001_init.sql",
+    "migrations/0002_add_notes.sql",
+    "package.json",
+    "src/cycle/a.ts",
+    "src/cycle/b.ts",
+    "src/dead.ts",
+    "src/format.ts",
+    "src/index.ts",
+    "src/malformed.ts",
+    "src/math/add.ts",
+    "src/math/index.ts",
+    "src/rename/new-name.ts"
+  ],
+  "symlinks": [
+    {
+      "path": "src/linked-math",
+      "target": "src/math",
+      "kind": "directory"
+    }
+  ],
+  "rename_sequence": [
+    {
+      "at": "2025-01-02T03:06:00.000Z",
+      "from": "src/rename/old-name.ts",
+      "to": "src/rename/new-name.ts"
+    }
+  ]
+}

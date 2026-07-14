@@ -193,6 +193,7 @@ export interface CrossrefOptions {
   maxGrepHits?: number;
   db?: AtlasDatabase;
   workspace?: string;
+  now?: () => Date;
 }
 
 interface ExportedSymbol {
@@ -640,7 +641,7 @@ export async function runCrossref(
       total_exports_analyzed: exportedSymbols.length,
       total_cross_references: Object.values(symbols).reduce((sum, symbol) => sum + symbol.total_usages, 0),
       crossref_model: 'heuristic',
-      crossref_timestamp: new Date().toISOString(),
+      crossref_timestamp: (options.now?.() ?? new Date()).toISOString(),
     };
 
     result[file.filePath] = crossRefs;

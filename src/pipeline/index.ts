@@ -1,7 +1,25 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { writeFileSync, unlinkSync } from 'node:fs';
-import { getAtlasFile, getFilePhase, listAtlasFiles, openAtlasDatabase, rebuildFts, resetAtlasDatabase, upsertAtlasMeta, upsertFileRecord } from '../db.js';
+import {
+  deleteAtlasFile,
+  getAtlasFile,
+  getFilePhase,
+  listAtlasFiles,
+  listImportEdges,
+  openAtlasDatabase,
+  populateFts,
+  rebuildFts,
+  resetAtlasDatabase,
+  upsertAtlasMeta,
+  upsertFileRecord,
+} from '../db.js';
 import type { AtlasCrossRefs, AtlasFileRecord, AtlasServerConfig, SourceHighlight } from '../types.js';
+import type {
+  AtlasIndexFailure,
+  AtlasIndexMode,
+  AtlasIndexRepositoryResult,
+} from '../indexing/types.js';
 import { toFileUpsertInput } from './shared.js';
 import { runScan, type ScanFileInfo } from './scan.js';
 import { persistCrossRefs, runCrossref } from './crossref.js';
@@ -25,6 +43,9 @@ export interface FullPipelineResult {
   filesSkipped?: number;
   filesMissing?: number;
   phase?: 'full' | 'crossref';
+  mode?: AtlasIndexMode;
+  failures?: AtlasIndexFailure[];
+  freshness?: AtlasIndexRepositoryResult['freshness'];
 }
 
 interface BatchPipelineContext {
@@ -37,6 +58,8 @@ interface BatchPipelineContext {
   cancelled: boolean;
   /** When true, skip resume logic and re-process all files from scratch */
   force: boolean;
+  failures: AtlasIndexFailure[];
+  now: () => Date;
 }
 
 // Heuristic-only phases — semantic fields populated organically via atlas_commit
@@ -122,10 +145,16 @@ async function runPhaseBatch(
       progress.complete(phaseKey, file.filePath);
       onProgress?.('complete');
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       phaseFailed += 1;
       failed.add(file.filePath);
       context.failedFiles.add(file.filePath);
-      progress.fail(phaseKey, file.filePath, error instanceof Error ? error.message : String(error));
+      context.failures.push({
+        filePath: file.filePath,
+        stage: phaseKey === 'crossref' ? 'crossref' : phaseKey === 'flow' ? 'flow' : 'repair',
+        message,
+      });
+      progress.fail(phaseKey, file.filePath, message);
       onProgress?.('fail');
     }
   });
@@ -135,13 +164,13 @@ async function runPhaseBatch(
   return { failed: failed.size, succeeded };
 }
 
-function buildDefaultCrossRefs(file: ScanFileInfo): AtlasCrossRefs {
+function buildDefaultCrossRefs(file: ScanFileInfo, now: () => Date): AtlasCrossRefs {
   return {
     symbols: {},
     total_exports_analyzed: file.exports.length,
     total_cross_references: 0,
     crossref_model: 'scaffold',
-    crossref_timestamp: new Date().toISOString(),
+    crossref_timestamp: now().toISOString(),
   };
 }
 
@@ -199,7 +228,7 @@ async function runCrossrefOnlyBatch(
   requestedFiles?: string[],
 ): Promise<CrossrefOnlyBatchResult> {
   const statusPath = path.join(context.rootDir, '.atlas', 'status.json');
-  const startedAt = new Date().toISOString();
+  const startedAt = context.now().toISOString();
   const filePhases = new Map<string, PhaseLevel>();
 
   for (const file of files) {
@@ -256,8 +285,9 @@ async function runCrossrefOnlyBatch(
       sourceRoot: context.rootDir,
       db: context.db,
       workspace: context.workspace,
+      now: context.now,
     });
-    const crossRefs = xrefs[file.filePath] ?? buildDefaultCrossRefs(file);
+    const crossRefs = xrefs[file.filePath] ?? buildDefaultCrossRefs(file, context.now);
     persistCrossRefs(context.db, context.workspace, file.filePath, crossRefs);
     refreshAtlasRecord(context, file.filePath);
   }, onProgress);
@@ -288,7 +318,7 @@ async function runSequentialPipelineBatch(
 
   // Status file — written to .atlas/status.json during pipeline execution
   const statusPath = path.join(context.rootDir, '.atlas', 'status.json');
-  const startedAt = new Date().toISOString();
+  const startedAt = context.now().toISOString();
 
   interface PhaseCounter { total: number; completed: number; failed: number; done: boolean }
   const cStruct: PhaseCounter = { total: 0, completed: 0, failed: 0, done: false };
@@ -350,6 +380,14 @@ async function runSequentialPipelineBatch(
       );
       cStruct.completed = structResult.filesProcessed;
       cStruct.failed = structResult.filesSkipped;
+      for (const failure of structResult.parseFailures) {
+        context.failedFiles.add(failure.filePath);
+        context.failures.push({
+          filePath: failure.filePath,
+          stage: 'parse',
+          message: failure.message,
+        });
+      }
       console.log(
         `[atlas-init] ${batchName}/structure: ${structResult.symbolsExtracted} symbols, `
         + `${structResult.edgesExtracted} edges from ${structResult.filesProcessed} files`,
@@ -412,13 +450,14 @@ async function runSequentialPipelineBatch(
       sourceRoot: context.rootDir,
       db: context.db,
       workspace: context.workspace,
+      now: context.now,
     });
-    const crossRefs = xrefs[file.filePath] ?? buildDefaultCrossRefs(file);
+    const crossRefs = xrefs[file.filePath] ?? buildDefaultCrossRefs(file, context.now);
 
     upsertFileRecord(context.db, toFileUpsertInput(atlasFile, {
       cross_refs: crossRefs,
       extraction_model: 'heuristic',
-      last_extracted: new Date().toISOString(),
+      last_extracted: context.now().toISOString(),
     }));
     refreshAtlasRecord(context, file.filePath);
   }, makeOnProgress(c2, 'crossref'));
@@ -540,13 +579,97 @@ export interface RuntimeReindexOptions {
   concurrency: number;
   phase?: 'full' | 'crossref';
   files?: string[];
+  mode?: AtlasIndexMode;
+  now?: () => Date;
 }
 
-export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise<FullPipelineResult> {
-  const { db, workspace, rootDir, concurrency } = options;
-  const phase = options.phase ?? 'full';
+function scanFingerprint(files: ScanFileInfo[]): string {
+  const source = [...files]
+    .sort((left, right) => compareStableText(left.filePath, right.filePath))
+    .map((file) => `${file.filePath}\0${file.fileHash}`)
+    .join('\n');
+  return createHash('sha256').update(source, 'utf8').digest('hex');
+}
 
+function compareStableText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function boundedPaths(paths: string[]): { values: string[]; truncated: boolean } {
+  const values: string[] = [];
+  let characters = 0;
+  for (const filePath of paths) {
+    if (values.length >= 4_096 || characters + filePath.length > 262_144) {
+      return { values, truncated: true };
+    }
+    values.push(filePath);
+    characters += filePath.length;
+  }
+  return { values, truncated: false };
+}
+
+export async function runRuntimeReindex(
+  options: RuntimeReindexOptions,
+): Promise<AtlasIndexRepositoryResult & FullPipelineResult> {
+  const { db, workspace, concurrency } = options;
+  const rootDir = path.resolve(options.rootDir);
+  const phase = options.phase ?? 'full';
+  const mode = options.mode ?? 'incremental';
+  const now = options.now ?? (() => new Date());
+
+  const beforeRecords = new Map(
+    listAtlasFiles(db, workspace).map((record) => [record.file_path, record] as const),
+  );
+  const beforeEdges = listImportEdges(db, workspace);
+
+  upsertAtlasMeta(db, { workspace, source_root: rootDir });
   const scan = await runScan(rootDir, workspace, db);
+  const currentPaths = new Set(scan.files.map((file) => file.filePath));
+  const deletedFiles = [...beforeRecords.keys()]
+    .filter((filePath) => !currentPaths.has(filePath))
+    .sort();
+  for (const filePath of deletedFiles) deleteAtlasFile(db, workspace, filePath);
+
+  const changedFiles = scan.files
+    .filter((file) => beforeRecords.get(file.filePath)?.file_hash !== file.fileHash)
+    .map((file) => file.filePath)
+    .sort();
+  const changedOrDeleted = new Set([...changedFiles, ...deletedFiles]);
+  const invalidated = new Set(changedFiles);
+  const reverseImports = new Map<string, Set<string>>();
+  for (const edge of [...beforeEdges, ...scan.importEdges]) {
+    const sources = reverseImports.get(edge.target_file) ?? new Set<string>();
+    sources.add(edge.source_file);
+    reverseImports.set(edge.target_file, sources);
+  }
+  const invalidationQueue = [...changedOrDeleted].sort();
+  for (let index = 0; index < invalidationQueue.length; index += 1) {
+    const target = invalidationQueue[index];
+    if (!target) continue;
+    for (const source of [...(reverseImports.get(target) ?? [])].sort()) {
+      if (!currentPaths.has(source) || invalidated.has(source)) continue;
+      invalidated.add(source);
+      invalidationQueue.push(source);
+    }
+  }
+  if (mode !== 'incremental') {
+    for (const file of scan.files) invalidated.add(file.filePath);
+  }
+  const invalidateStatement = db.prepare(
+    `UPDATE atlas_files
+     SET cross_refs = '{}', updated_at = CURRENT_TIMESTAMP
+     WHERE workspace = ? AND file_path = ?`,
+  );
+  for (const filePath of [...invalidated].sort()) {
+    invalidateStatement.run(workspace, filePath);
+    const record = getAtlasFile(db, workspace, filePath);
+    if (record) {
+      const fileId = db.prepare(
+        'SELECT id FROM atlas_files WHERE workspace = ? AND file_path = ? LIMIT 1',
+      ).get(workspace, filePath) as { id?: number } | undefined;
+      if (fileId?.id != null) populateFts(db, fileId.id);
+    }
+  }
 
   const atlasRecords = new Map(
     listAtlasFiles(db, workspace).map((record) => [record.file_path, record] as const),
@@ -563,33 +686,72 @@ export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise
     atlasRecords,
     failedFiles: new Set<string>(),
     cancelled: false,
-    force: false,
+    force: mode === 'repair',
+    failures: [],
+    now,
+  };
+
+  const buildResult = (
+    filesProcessed: number,
+    filesFailed: number,
+    filesSkipped: number,
+  ): AtlasIndexRepositoryResult & FullPipelineResult => {
+    const allFailures = [...context.failures].sort((left, right) =>
+      compareStableText(left.filePath, right.filePath) || compareStableText(left.stage, right.stage));
+    const failures = allFailures.slice(0, 1_024).map((failure) => ({
+      ...failure,
+      message: failure.message.slice(0, 1_000),
+    }));
+    const staleRecords = listAtlasFiles(db, workspace)
+      .filter((record) => !currentPaths.has(record.file_path)).length;
+    const invalidatedFiles = [...invalidated].sort();
+    const boundedChanged = boundedPaths(changedFiles);
+    const boundedDeleted = boundedPaths(deletedFiles);
+    const boundedInvalidated = boundedPaths(invalidatedFiles);
+    return {
+      workspace,
+      rootDir,
+      mode,
+      filesProcessed,
+      filesFailed,
+      filesSkipped,
+      failures,
+      failuresTruncated: failures.length !== allFailures.length,
+      freshness: {
+        scanFingerprint: scanFingerprint(scan.files),
+        currentFiles: scan.files.length,
+        importEdges: scan.importEdges.length,
+        changedFileCount: changedFiles.length,
+        deletedFileCount: deletedFiles.length,
+        invalidatedFileCount: invalidatedFiles.length,
+        changedFiles: boundedChanged.values,
+        deletedFiles: boundedDeleted.values,
+        invalidatedFiles: boundedInvalidated.values,
+        pathsTruncated: boundedChanged.truncated || boundedDeleted.truncated || boundedInvalidated.truncated,
+        staleRecords,
+        complete: allFailures.length === 0 && staleRecords === 0,
+      },
+      phase,
+    };
   };
 
   if (phase === 'crossref') {
     const result = await runCrossrefOnlyBatch('reindex/crossref', scan.files, context, options.files);
     rebuildFts(db);
     return {
-      workspace,
-      rootDir,
-      filesProcessed: result.succeeded + result.failed,
-      filesFailed: result.failed,
-      filesSkipped: result.skippedPrereq,
+      ...buildResult(
+        result.succeeded + result.failed,
+        result.failed,
+        result.skippedPrereq,
+      ),
       filesMissing: result.missingRequested,
-      phase,
     };
   }
 
   const result = await runSequentialPipelineBatch('reindex', scan.files, context);
   rebuildFts(db);
 
-  return {
-    workspace,
-    rootDir,
-    filesProcessed: scan.files.length,
-    filesFailed: result.failed,
-    phase,
-  };
+  return buildResult(scan.files.length, result.failed, 0);
 }
 
 export async function runFullPipeline(projectDir: string, config: AtlasPipelineConfig): Promise<FullPipelineResult> {
@@ -660,6 +822,8 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
         failedFiles: new Set<string>(),
         cancelled,
         force: false,
+        failures: [],
+        now: () => new Date(),
       };
       activeContext = crossrefContext;
 
@@ -703,6 +867,8 @@ export async function runFullPipeline(projectDir: string, config: AtlasPipelineC
       failedFiles: new Set<string>(),
       cancelled,
       force: config.force ?? false,
+      failures: [],
+      now: () => new Date(),
     };
     activeContext = mainContext;
 

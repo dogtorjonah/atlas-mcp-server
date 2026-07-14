@@ -9,6 +9,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import Database from 'better-sqlite3';
@@ -90,8 +91,8 @@ export function discoverWorkspaces(currentSourceRoot: string): BridgeDb[] {
   scanDirs.add(path.dirname(currentSourceRoot));
 
   // Also scan home dir if it exists
-  const homeDir = process.env.HOME || '/Users/administrator';
-  scanDirs.add(homeDir);
+  const homeDir = os.homedir();
+  if (homeDir) scanDirs.add(homeDir);
 
   for (const scanDir of scanDirs) {
     if (!fs.existsSync(scanDir)) continue;

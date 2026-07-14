@@ -1,0 +1,339 @@
+{
+  "schema_version": 1,
+  "file": {
+    "id": 1,
+    "workspace": "fixture-small",
+    "file_path": "src/index.ts",
+    "file_hash": "sha256:fixture-file-0001",
+    "cluster": "src",
+    "line_count": 11,
+    "blurb": "Fixture entrypoint",
+    "purpose": "Exports deterministic formatting and arithmetic fixture behavior.",
+    "public_api": [
+      {
+        "name": "describeTotal",
+        "type": "function",
+        "signature": "(values: number[]) => string"
+      }
+    ],
+    "exports": [
+      {
+        "name": "describeTotal",
+        "type": "function"
+      }
+    ],
+    "patterns": [
+      "pure-function"
+    ],
+    "tags": [
+      "fixture",
+      "entrypoint"
+    ],
+    "dependencies": {
+      "imports": [
+        "src/format.ts",
+        "src/math/index.ts"
+      ]
+    },
+    "data_flows": [
+      "numbers -> sum -> formatted string"
+    ],
+    "key_types": [],
+    "hazards": [
+      "Input order is significant."
+    ],
+    "ranged_hazards": [
+      {
+        "text": "Input order is significant.",
+        "start_line": 4,
+        "end_line": 9
+      }
+    ],
+    "conventions": [
+      "Repository-relative POSIX paths"
+    ],
+    "cross_references": null,
+    "source_highlights": [
+      {
+        "id": 1,
+        "label": "Deterministic public entrypoint",
+        "start_line": 4,
+        "end_line": 9,
+        "content": "export function describeTotal(values: number[]): string {\n  return formatTotal(sum(values));\n}"
+      }
+    ],
+    "language": "typescript",
+    "extraction_provider": null,
+    "extracted_at": "2025-01-02T03:04:05.000Z"
+  },
+  "symbol_identity": {
+    "id": 7,
+    "workspace": "fixture-small",
+    "file_path": "src/index.ts",
+    "symbol": "describeTotal",
+    "purpose": "Formats the deterministic aggregate exposed by the fixture entrypoint.",
+    "hazards": [
+      "Input order is significant."
+    ],
+    "attribution": {
+      "principal": {
+        "id": "fixture-author",
+        "display_name": "Fixture Author",
+        "kind": "automation"
+      },
+      "runtime": {
+        "name": "fixture-builder",
+        "version": "1.0.0"
+      },
+      "tool_id": "fixture-materializer",
+      "source": "fixture"
+    },
+    "created_at": "2025-01-02T03:04:05.000Z",
+    "updated_at": "2025-01-02T03:05:00.000Z"
+  },
+  "graph_edge": {
+    "id": 11,
+    "workspace": "fixture-small",
+    "source_file": "src/index.ts",
+    "target_file": "src/math/index.ts",
+    "source_symbol_id": 7,
+    "target_symbol_id": 8,
+    "edge_type": "import",
+    "usage_count": 1,
+    "confidence": 1,
+    "provenance": "ast",
+    "last_verified_at": "2025-01-02T03:04:05.000Z"
+  },
+  "changelog": {
+    "id": 21,
+    "workspace": "fixture-small",
+    "file_path": "src/index.ts",
+    "summary": "Created the deterministic fixture entrypoint.",
+    "patterns_added": [
+      "pure-function"
+    ],
+    "patterns_removed": [],
+    "hazards_added": [
+      "Input order is significant."
+    ],
+    "hazards_removed": [],
+    "cluster": "src",
+    "breaking_changes": false,
+    "repository_revision": "fixture-revision-0001",
+    "attribution": {
+      "principal": {
+        "id": "fixture-author",
+        "display_name": "Fixture Author",
+        "kind": "automation"
+      },
+      "runtime": {
+        "name": "fixture-builder",
+        "version": "1.0.0"
+      },
+      "tool_id": "fixture-materializer",
+      "source": "fixture"
+    },
+    "evidence": [
+      {
+        "namespace": "fixture.provenance",
+        "schema_version": "1",
+        "provider_id": "fixture-repository",
+        "provider_version": "1.0.0",
+        "evidence_id": "evidence-0001",
+        "subject": {
+          "kind": "file",
+          "workspace": "fixture-small",
+          "key": "src/index.ts"
+        },
+        "kind": "reviewed",
+        "principal": {
+          "id": "fixture-reviewer",
+          "display_name": "Fixture Reviewer",
+          "kind": "automation"
+        },
+        "occurred_at": "2025-01-02T03:05:00.000Z",
+        "observed_at": "2025-01-02T03:05:01.000Z",
+        "authority": "verified-external",
+        "confidence": "high",
+        "source_ref": "fixture://small/review/1",
+        "payload": {
+          "verdict": "pass",
+          "checks": [
+            "paths",
+            "imports",
+            "history"
+          ]
+        },
+        "payload_hash": "sha256:fixture-evidence-0001"
+      }
+    ],
+    "source": "atlas_commit",
+    "verification_status": "verified",
+    "verification_notes": "Fixture evidence is byte-stable.",
+    "created_at": "2025-01-02T03:05:00.000Z"
+  },
+  "query_request": {
+    "action": "history",
+    "workspace": "fixture-small",
+    "format": "json",
+    "limit": 20,
+    "file_path": "src/index.ts",
+    "mode": "entries",
+    "order": "asc",
+    "principal_id": "fixture-author",
+    "verification_status": "verified"
+  },
+  "result": {
+    "protocol_version": "1",
+    "ok": true,
+    "request_id": "request-0001",
+    "data": {
+      "items": [
+        {
+          "id": 1,
+          "workspace": "fixture-small",
+          "file_path": "src/index.ts",
+          "file_hash": "sha256:fixture-file-0001",
+          "cluster": "src",
+          "line_count": 11,
+          "blurb": "Fixture entrypoint",
+          "purpose": "Exports deterministic formatting and arithmetic fixture behavior.",
+          "public_api": [
+            {
+              "name": "describeTotal",
+              "type": "function",
+              "signature": "(values: number[]) => string"
+            }
+          ],
+          "exports": [
+            {
+              "name": "describeTotal",
+              "type": "function"
+            }
+          ],
+          "patterns": [
+            "pure-function"
+          ],
+          "tags": [
+            "fixture",
+            "entrypoint"
+          ],
+          "dependencies": {
+            "imports": [
+              "src/format.ts",
+              "src/math/index.ts"
+            ]
+          },
+          "data_flows": [
+            "numbers -> sum -> formatted string"
+          ],
+          "key_types": [],
+          "hazards": [
+            "Input order is significant."
+          ],
+          "ranged_hazards": [
+            {
+              "text": "Input order is significant.",
+              "start_line": 4,
+              "end_line": 9
+            }
+          ],
+          "conventions": [
+            "Repository-relative POSIX paths"
+          ],
+          "cross_references": null,
+          "source_highlights": [
+            {
+              "id": 1,
+              "label": "Deterministic public entrypoint",
+              "start_line": 4,
+              "end_line": 9,
+              "content": "export function describeTotal(values: number[]): string {\n  return formatTotal(sum(values));\n}"
+            }
+          ],
+          "language": "typescript",
+          "extraction_provider": null,
+          "extracted_at": "2025-01-02T03:04:05.000Z"
+        }
+      ]
+    },
+    "meta": {
+      "workspace": "fixture-small",
+      "repository_id": "repository-fixture-small",
+      "capabilities": {
+        "lexical_search": "available",
+        "vector_search": "disabled"
+      },
+      "warnings": [],
+      "page": {
+        "next_cursor": null,
+        "returned": 1,
+        "total": 1,
+        "truncated": false
+      },
+      "evidence": {
+        "authority": "mixed",
+        "freshness": "current",
+        "confidence": "high",
+        "completeness": "complete"
+      },
+      "extensions": [
+        {
+          "namespace": "fixture.provenance",
+          "schema_version": "1",
+          "provider_id": "fixture-repository",
+          "provider_version": "1.0.0",
+          "evidence_id": "evidence-0001",
+          "subject": {
+            "kind": "file",
+            "workspace": "fixture-small",
+            "key": "src/index.ts"
+          },
+          "kind": "reviewed",
+          "principal": {
+            "id": "fixture-reviewer",
+            "display_name": "Fixture Reviewer",
+            "kind": "automation"
+          },
+          "occurred_at": "2025-01-02T03:05:00.000Z",
+          "observed_at": "2025-01-02T03:05:01.000Z",
+          "authority": "verified-external",
+          "confidence": "high",
+          "source_ref": "fixture://small/review/1",
+          "payload": {
+            "verdict": "pass",
+            "checks": [
+              "paths",
+              "imports",
+              "history"
+            ]
+          },
+          "payload_hash": "sha256:fixture-evidence-0001"
+        }
+      ]
+    }
+  },
+  "failure": {
+    "protocol_version": "1",
+    "ok": false,
+    "request_id": "request-0002",
+    "error": {
+      "code": "ATLAS_INVALID_REQUEST",
+      "message": "start_line must be less than or equal to end_line",
+      "retryable": false,
+      "details": {
+        "field": "start_line"
+      },
+      "actions": [
+        {
+          "label": "Correct the requested line range."
+        }
+      ]
+    },
+    "meta": {
+      "capabilities": {},
+      "warnings": [],
+      "extensions": []
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "name": "medium",
+  "workspace": "fixture-medium",
+  "clock": "2025-02-03T04:05:06.000Z",
+  "source_files": [
+    "docs/architecture.md",
+    "migrations/0001_init.sql",
+    "migrations/0002_accounts.sql",
+    "migrations/0003_audit.sql",
+    "package.json",
+    "src/api/handler.ts",
+    "src/api/router.ts",
+    "src/cycles/one.ts",
+    "src/cycles/three.ts",
+    "src/cycles/two.ts",
+    "src/dead/orphan.ts",
+    "src/domain/account.ts",
+    "src/domain/user.ts",
+    "src/index.ts",
+    "src/malformed/broken.py",
+    "src/reexports/index.ts",
+    "src/repository/memoryRepository.ts",
+    "src/repository/userRepository.ts",
+    "src/services/auditService.ts",
+    "src/services/userService.ts",
+    "src/shared/ids.ts",
+    "src/shared/result.ts"
+  ],
+  "symlinks": [
+    {
+      "path": "src/domain-alias",
+      "target": "src/domain",
+      "kind": "directory"
+    }
+  ],
+  "rename_sequence": [
+    {
+      "at": "2025-02-03T04:07:00.000Z",
+      "from": "src/repository/accountRepository.ts",
+      "to": "src/repository/userRepository.ts"
+    },
+    {
+      "at": "2025-02-03T04:09:00.000Z",
+      "from": "src/api/controller.ts",
+      "to": "src/api/handler.ts"
+    }
+  ]
+}

@@ -1,6 +1,9 @@
 node_modules/
 dist/
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
 # Atlas — runtime artifacts, not source
 .atlas/
 

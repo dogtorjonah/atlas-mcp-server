@@ -1,0 +1,140 @@
+{
+  "files": [
+    "docs/architecture.md",
+    "migrations/0001_init.sql",
+    "migrations/0002_accounts.sql",
+    "migrations/0003_audit.sql",
+    "package.json",
+    "src/api/handler.ts",
+    "src/api/router.ts",
+    "src/cycles/one.ts",
+    "src/cycles/three.ts",
+    "src/cycles/two.ts",
+    "src/dead/orphan.ts",
+    "src/domain/account.ts",
+    "src/domain/user.ts",
+    "src/index.ts",
+    "src/malformed/broken.py",
+    "src/reexports/index.ts",
+    "src/repository/memoryRepository.ts",
+    "src/repository/userRepository.ts",
+    "src/services/auditService.ts",
+    "src/services/userService.ts",
+    "src/shared/ids.ts",
+    "src/shared/result.ts"
+  ],
+  "entrypoints": ["src/index.ts"],
+  "edges": [
+    { "from": "src/api/handler.ts", "to": "src/services/userService.ts", "kind": "import" },
+    { "from": "src/api/handler.ts", "to": "src/shared/result.ts", "kind": "import" },
+    { "from": "src/api/handler.ts", "to": "src/domain/user.ts", "kind": "import" },
+    { "from": "src/api/router.ts", "to": "src/api/handler.ts", "kind": "import" },
+    { "from": "src/cycles/one.ts", "to": "src/cycles/two.ts", "kind": "import" },
+    { "from": "src/cycles/three.ts", "to": "src/cycles/one.ts", "kind": "import" },
+    { "from": "src/cycles/two.ts", "to": "src/cycles/three.ts", "kind": "import" },
+    { "from": "src/domain/account.ts", "to": "src/domain/user.ts", "kind": "import" },
+    { "from": "src/index.ts", "to": "src/api/router.ts", "kind": "import" },
+    { "from": "src/index.ts", "to": "src/cycles/one.ts", "kind": "import" },
+    { "from": "src/index.ts", "to": "src/reexports/index.ts", "kind": "re-export" },
+    { "from": "src/index.ts", "to": "src/services/auditService.ts", "kind": "import" },
+    { "from": "src/reexports/index.ts", "to": "src/domain/account.ts", "kind": "re-export" },
+    { "from": "src/reexports/index.ts", "to": "src/domain/user.ts", "kind": "re-export" },
+    { "from": "src/repository/userRepository.ts", "to": "src/domain/user.ts", "kind": "import" },
+    { "from": "src/repository/userRepository.ts", "to": "src/shared/ids.ts", "kind": "import" },
+    { "from": "src/services/auditService.ts", "to": "src/repository/memoryRepository.ts", "kind": "import" },
+    { "from": "src/services/userService.ts", "to": "src/domain/user.ts", "kind": "import" },
+    { "from": "src/services/userService.ts", "to": "src/repository/userRepository.ts", "kind": "import" }
+  ],
+  "cycles": [
+    ["src/cycles/one.ts", "src/cycles/two.ts", "src/cycles/three.ts"]
+  ],
+  "dead_files": ["src/dead/orphan.ts"],
+  "dead_exports": [
+    "src/services/auditService.ts#listAudit",
+    "src/shared/ids.ts#isUserId"
+  ],
+  "malformed_files": [
+    { "file_path": "src/malformed/broken.py", "reason": "unterminated-parameter-list" }
+  ],
+  "migrations": ["0001_init.sql", "0002_accounts.sql", "0003_audit.sql"],
+  "queries": {
+    "account owner": ["src/domain/account.ts", "src/domain/user.ts"],
+    "audit event": ["src/services/auditService.ts", "src/repository/memoryRepository.ts"],
+    "create user route": ["src/api/router.ts", "src/api/handler.ts", "src/services/userService.ts"],
+    "repository rename": ["src/repository/userRepository.ts"]
+  },
+  "history": [
+    {
+      "id": 1,
+      "created_at": "2025-02-03T04:05:06.000Z",
+      "file_path": "src/domain/user.ts",
+      "summary": "Defined the public user record.",
+      "breaking_changes": false
+    },
+    {
+      "id": 2,
+      "created_at": "2025-02-03T04:07:00.000Z",
+      "file_path": "src/repository/userRepository.ts",
+      "summary": "Renamed the account repository to match its stored subject.",
+      "breaking_changes": true
+    },
+    {
+      "id": 3,
+      "created_at": "2025-02-03T04:08:00.000Z",
+      "file_path": "src/services/userService.ts",
+      "summary": "Added deterministic duplicate-user rejection.",
+      "breaking_changes": false
+    },
+    {
+      "id": 4,
+      "created_at": "2025-02-03T04:09:00.000Z",
+      "file_path": "src/api/handler.ts",
+      "summary": "Renamed the API controller and retained its route behavior.",
+      "breaking_changes": false
+    },
+    {
+      "id": 5,
+      "created_at": "2025-02-03T04:10:00.000Z",
+      "file_path": "src/services/auditService.ts",
+      "summary": "Recorded bounded audit events.",
+      "breaking_changes": false
+    },
+    {
+      "id": 6,
+      "created_at": "2025-02-03T04:11:00.000Z",
+      "file_path": "src/index.ts",
+      "summary": "Published the fixture route entrypoint.",
+      "breaking_changes": true
+    }
+  ],
+  "metadata": [
+    {
+      "file_path": "src/api/handler.ts",
+      "hazards": ["Request names are untrusted fixture input and must be validated by callers."],
+      "source_highlights": [
+        { "label": "Create-user request handler", "start_line": 5, "end_line": 9 }
+      ]
+    },
+    {
+      "file_path": "src/repository/memoryRepository.ts",
+      "hazards": ["The in-memory array is process-local and intentionally non-durable."],
+      "source_highlights": [
+        { "label": "Bounded audit append", "start_line": 5, "end_line": 9 }
+      ]
+    },
+    {
+      "file_path": "src/services/userService.ts",
+      "hazards": ["Duplicate names return the existing record instead of creating a second identity."],
+      "source_highlights": [
+        { "label": "Deterministic create-or-return flow", "start_line": 4, "end_line": 9 }
+      ]
+    },
+    {
+      "file_path": "src/index.ts",
+      "hazards": [],
+      "source_highlights": [
+        { "label": "Public fixture route", "start_line": 7, "end_line": 11 }
+      ]
+    }
+  ]
+}

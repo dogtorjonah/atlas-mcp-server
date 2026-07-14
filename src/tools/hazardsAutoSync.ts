@@ -1,8 +1,8 @@
 /**
- * Wave 52 — write-side hazards auto-sync. Pure helper that enforces the
+ * Write-side hazard synchronization. This pure helper enforces a
  * union-with-dedup invariant on the parallel `hazards` (legacy text-only) and
- * `hazards_with_ranges` (Wave 44 structured) columns at the atlas_commit
- * merge boundary.
+ * `hazards_with_ranges` (structured) columns at the atlas_commit merge
+ * boundary.
  *
  * # The bug this closes
  *
@@ -25,27 +25,11 @@
  *      → row { hazards: ['race in flush'],
  *              hazards_with_ranges: [{text: 'leak in cleanup', ...}] }
  *
- * Pre-Wave-50/51 reader surfaces (brief/lookup/snippet) all assumed
- * SUPERSESSION semantics — `if (hazards_with_ranges.length > 0)` →
- * emit only structured, legacy is suppressed. Agent A's preserved
- * legacy hazard SILENTLY DROPPED from every read view. Real production
- * data-loss bug.
+ * Readers that prefer structured entries could then suppress Agent A's
+ * preserved text-only hazard. Synchronizing at the write boundary prevents
+ * that mixed-row data loss.
  *
- * # The arc that healed it
- *
- *   W44 → introduced parallel structured column (writer-side opt-in only)
- *   W45 → buildSnippetHint Fragment 4 consumed structured (supersession)
- *   W46a → lookup.ts ## Hazards rendering consumed structured (supersession)
- *   W46b → buildLookupHint parsed structured (auto-aligned)
- *   W47a → brief.ts Hazards: line consumed structured (supersession)
- *   W47b → buildBriefHint parsed structured (auto-aligned)
- *   W48 → FTS indexing extended with union-with-dedup (FIRST union reader)
- *   W49 → one-shot rebuildFts backfill for existing rows
- *   W50 → render-side union-with-dedup heal of brief.ts + lookup.ts
- *   W51 → render-side union-with-dedup heal of buildSnippetHint Fragment 4
- *   W52 → THIS — write-side union-with-dedup auto-sync at commit boundary
- *
- * # The Wave 52 invariant
+ * # Invariant
  *
  * After every atlas_commit, both columns contain the TEXT-EQUIVALENT UNION
  * of all hazards. The transformation:
@@ -70,16 +54,15 @@
  *   - The invariant is symmetric ("both columns = text union") which is
  *     easier to reason about than asymmetric ("structured is authoritative,
  *     legacy is best-effort projection").
- *   - Wave 49 backfill flag becomes truly redundant for newly-committed
- *     rows (still useful for historical rows pre-Wave-52).
- *   - Future tooling that defaults to reading legacy (e.g. FTS Wave 48
- *     before structured was indexed) automatically gets all texts.
+ *   - Newly committed rows do not depend on the one-time FTS backfill used
+ *     for historical databases.
+ *   - Tooling that reads only the legacy column still gets every hazard text.
  *
  * # Trim semantics
  *
  * The text Sets use trimmed-for-comparison + filter-blank. Storage
- * preserves the original (untrimmed) text — this matches every Wave 50/51
- * reader pattern. Whitespace-only differences in leading/trailing are
+ * preserves the original (untrimmed) text, matching reader behavior.
+ * Whitespace-only differences in leading/trailing are
  * normalized for dedup; embedded whitespace differences (e.g., "foo\nbar"
  * vs "foo bar") are preserved as distinct (also matches readers).
  *
@@ -100,16 +83,12 @@
  * BOTH, the agent must pass both `hazards: []` AND `hazards_with_ranges: []`.
  * This matches the union semantic readers already enforce.
  *
- * # Wave 53 — drift telemetry
+ * # Drift telemetry
  *
- * The Wave 52 invariant is enforced SILENTLY: every commit passes through
- * autoSyncHazardsColumns regardless of whether drift was present, so an
- * operator watching the system has no signal for whether the helper is
- * actually doing useful work (healing drift) versus running as a no-op on
- * already-aligned columns. Wave 53 adds the `driftStats` field to the
- * return shape so commit.ts can emit a structured log when drift was
- * detected — turning silent invariant enforcement into an observable
- * diagnostic. The counters are:
+ * The invariant is enforced on every commit. The `driftStats` return field
+ * lets the caller distinguish a useful heal from an already-aligned no-op
+ * and emit a structured diagnostic only when drift was detected. The
+ * counters are:
  *
  *   - legacyOrphansAdded: legacy entries (non-blank, trimmed-unique) that
  *     were NOT present in the structured column and got mirrored TO
@@ -124,7 +103,7 @@
  *
  *   - duplicatesCollapsed: count of unique texts that appeared in BOTH
  *     columns (Set intersection size). High value on a re-run indicates
- *     the W52 invariant is already holding (idempotent re-pass produces
+ *     the invariant is already holding (idempotent re-pass produces
  *     duplicatesCollapsed = total-unique-texts, all orphans = 0). On a
  *     first pass with overlap, this is the count of texts the helper
  *     correctly recognized as already-shared and did NOT double-mirror.
@@ -141,12 +120,11 @@
 import type { AtlasHazardWithRange } from '../types.js';
 
 /**
- * Wave 53 — counters surfacing how much drift autoSyncHazardsColumns
- * actually healed on a single call. Caller (commit.ts) uses these to
- * decide whether to emit a structured drift-heal log line.
+ * Counters describing how much drift autoSyncHazardsColumns healed on one
+ * call. The caller uses them to decide whether to emit a diagnostic.
  *
- * Pure data — no methods, no side effects. See hazardsAutoSync.ts JSDoc
- * `## Wave 53 — drift telemetry` section for the full counter semantics.
+ * Pure data — no methods, no side effects. See the module-level drift
+ * telemetry section for the full semantics.
  */
 export interface AutoSyncDriftStats {
   /**
@@ -172,7 +150,7 @@ export interface AutoSyncHazardsResult {
   syncedHazards: string[];
   syncedHazardsWithRanges: AtlasHazardWithRange[];
   /**
-   * Wave 53 — drift telemetry counters for the merge that just ran.
+   * Drift telemetry counters for the merge that just ran.
    * commit.ts emits a structured log when orphan counters > 0; silent
    * when zero. See AutoSyncDriftStats JSDoc for counter semantics.
    */
@@ -198,8 +176,8 @@ export function autoSyncHazardsColumns(
 ): AutoSyncHazardsResult {
   // Defensive: bad data (non-string legacy entries, non-object structured
   // entries, missing/blank `text` field) gets filtered out of the Sets but
-  // preserved in the original-input copies below. This matches the Wave 50/51
-  // reader trim-and-filter pattern.
+  // preserved in the original-input copies below. This matches the reader
+  // trim-and-filter pattern.
   const legacyTexts = new Set(
     legacy
       .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
@@ -229,7 +207,7 @@ export function autoSyncHazardsColumns(
   // Mirror orphan legacy → structured as file-level entries. Use explicit
   // `null` (not undefined / omitted) for startLine/endLine so the round-trip
   // shape matches the existing "file-level" convention pinned in the
-  // Wave 44 atlasHazardsWithRanges round-trip suite.
+  // structured-hazard round-trip contract.
   const syncedHazardsWithRanges: AtlasHazardWithRange[] = [
     ...structured,
     ...orphanLegacyEntries.map((text) => ({
@@ -246,7 +224,7 @@ export function autoSyncHazardsColumns(
     ...orphanStructuredEntries.map((entry) => entry.text),
   ];
 
-  // Wave 53 — drift telemetry counters. Derive from the same intermediate
+  // Derive drift telemetry from the same intermediate
   // values already computed above; no extra passes over the input arrays.
   // duplicatesCollapsed = |legacyTexts ∩ structuredTexts| (unique texts
   // that appeared in BOTH columns and did NOT need mirroring). Counted

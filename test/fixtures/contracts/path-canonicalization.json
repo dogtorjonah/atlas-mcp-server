@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "contexts": {
+    "posix": {
+      "workspace": "Fixture-Small",
+      "repository_root": "/srv/atlas/fixture-small",
+      "platform": "posix",
+      "case_sensitive": true,
+      "symlinks": [
+        {
+          "path": "src/linked-math",
+          "target": "src/math",
+          "kind": "directory"
+        }
+      ],
+      "redirects": [
+        {
+          "from": "src/rename/old-name.ts",
+          "to": "src/rename/new-name.ts",
+          "kind": "file"
+        },
+        {
+          "from": "src/deleted.ts",
+          "to": null,
+          "kind": "file"
+        }
+      ]
+    },
+    "windows": {
+      "workspace": "Fixture-Small",
+      "repository_root": "C:\\Work\\Fixture-Small",
+      "platform": "win32",
+      "case_sensitive": false,
+      "symlinks": [
+        {
+          "path": "src/linked-math",
+          "target": "src/math",
+          "kind": "directory"
+        }
+      ],
+      "redirects": []
+    },
+    "cycle": {
+      "workspace": "fixture-cycle",
+      "repository_root": "/srv/atlas/fixture-cycle",
+      "platform": "posix",
+      "redirects": [
+        {
+          "from": "src/a.ts",
+          "to": "src/b.ts",
+          "kind": "file"
+        },
+        {
+          "from": "src/b.ts",
+          "to": "src/a.ts",
+          "kind": "file"
+        }
+      ]
+    },
+    "invalid-mapping": {
+      "workspace": "fixture-invalid",
+      "repository_root": "/srv/atlas/fixture-invalid",
+      "platform": "posix",
+      "symlinks": [
+        {
+          "path": "src//link",
+          "target": "src/target",
+          "kind": "directory"
+        }
+      ]
+    },
+    "invalid-workspace": {
+      "workspace": "bad/workspace",
+      "repository_root": "/srv/atlas/fixture",
+      "platform": "posix"
+    },
+    "relative-root": {
+      "workspace": "fixture-relative",
+      "repository_root": "srv/atlas/fixture-relative",
+      "platform": "posix"
+    }
+  },
+  "cases": [
+    {
+      "name": "canonical POSIX relative path",
+      "context": "posix",
+      "input": "src/math/add.ts",
+      "expected": {
+        "ok": true,
+        "workspace": "fixture-small",
+        "path": "src/math/add.ts",
+        "identity": "fixture-small:src/math/add.ts",
+        "state": "current",
+        "aliases": [],
+        "resolvedSymlink": false,
+        "redirected": false
+      }
+    },
+    {
+      "name": "noisy POSIX relative path",
+      "context": "posix",
+      "input": "./src//math/../math/add.ts",
+      "expected": {
+        "ok": true,
+        "workspace": "fixture-small",
+        "path": "src/math/add.ts",
+        "identity": "fixture-small:src/math/add.ts",
+        "state": "current",
+        "aliases": [],
+        "resolvedSymlink": false,
+        "redirected": false
+      }
+    },
+    {
+      "name": "POSIX absolute path under root",
+      "context": "posix",
+      "input": "/srv/atlas/fixture-small/src/math/add.ts",
+      "expected": {
+        "ok": true,
+        "workspace": "fixture-small",
+        "path": "src/math/add.ts",
+        "identity": "fixture-small:src/math/add.ts",
+        "state": "current",
+        "aliases": [],
+        "resolvedSymlink": false,
+        "redirected": false
+      }
+    },
+    {
+      "name": "directory symlink alias",
+      "context": "posix",
+      "input": "src/linked-math/add.ts",
+      "expected": {
+        "ok": true,
+        "workspace": "fixture-small",
+        "path": "src/math/add.ts",
+        "identity": "fixture-small:src/math/add.ts",
+        "state": "current",
+        "aliases": [
+          "src/linked-math/add.ts"
+        ],
+        "resolvedSymlink": true,
+        "redirected": false
+      }
+    },
+    {
+      "name": "historical rename alias",
+      "context": "posix",
+      "input": "src/rename/old-name.ts",
+      "expected": {
+        "ok": true,
+        "workspace": "fixture-small",
+        "path": "src/rename/new-name.ts",
+        "identity": "fixture-small:src/rename/new-name.ts",
+        "state": "current",
+        "aliases": [
+          "src/rename/old-name.ts"
+        ],
+        "resolvedSymlink": false,
+        "redirected": true
+      }
+    },
+    {
+      "name": "deleted historical path",
+      "context": "posix",
+      "input": "src/deleted.ts",
+      "expected": {
+        "ok": true,
+        "workspace": "fixture-small",
+        "path": "src/deleted.ts",
+        "identity": "fixture-small:src/deleted.ts",
+        "state": "deleted",
+        "aliases": [],
+        "resolvedSymlink": false,
+        "redirected": true
+      }
+    },
+    {
+      "name": "relative traversal escape",
+      "context": "posix",
+      "input": "../../etc/passwd",
+      "expected": {
+        "ok": false,
+        "code": "PATH_TRAVERSAL",
+        "message": "Path traversal escapes the authorized repository root."
+      }
+    },
+    {
+      "name": "external POSIX absolute path",
+      "context": "posix",
+      "input": "/etc/passwd",
+      "expected": {
+        "ok": false,
+        "code": "PATH_OUTSIDE_REPOSITORY",
+        "message": "Absolute path is outside the authorized repository root."
+      }
+    },
+    {
+      "name": "ambiguous URI path",
+      "context": "posix",
+      "input": "file:///srv/atlas/fixture-small/src/math/add.ts",
+      "expected": {
+        "ok": false,
+        "code": "INVALID_PATH",
+        "message": "Path contains unsupported or ambiguous syntax."
+      }
+    },
+    {
+      "name": "mixed-case Windows absolute path",
+      "context": "windows",
+      "input": "c:\\work\\fixture-small\\SRC\\MATH\\add.ts",
+      "expected": {
+        "ok": true,
+        "workspace": "fixture-small",
+        "path": "src/math/add.ts",
+        "identity": "fixture-small:src/math/add.ts",
+        "state": "current",
+        "aliases": [],
+        "resolvedSymlink": false,
+        "redirected": false
+      }
+    },
+    {
+      "name": "Windows relative separators",
+      "context": "windows",
+      "input": "SRC\\MATH\\.\\add.ts",
+      "expected": {
+        "ok": true,
+        "workspace": "fixture-small",
+        "path": "src/math/add.ts",
+        "identity": "fixture-small:src/math/add.ts",
+        "state": "current",
+        "aliases": [],
+        "resolvedSymlink": false,
+        "redirected": false
+      }
+    },
+    {
+      "name": "external Windows drive",
+      "context": "windows",
+      "input": "D:\\outside\\secret.ts",
+      "expected": {
+        "ok": false,
+        "code": "PATH_OUTSIDE_REPOSITORY",
+        "message": "Absolute path is outside the authorized repository root."
+      }
+    },
+    {
+      "name": "ambiguous Windows drive-relative path",
+      "context": "windows",
+      "input": "C:src\\math\\add.ts",
+      "expected": {
+        "ok": false,
+        "code": "INVALID_PATH",
+        "message": "Path contains unsupported or ambiguous syntax."
+      }
+    },
+    {
+      "name": "redirect cycle",
+      "context": "cycle",
+      "input": "src/a.ts",
+      "expected": {
+        "ok": false,
+        "code": "MAPPING_CYCLE",
+        "message": "Path alias or redirect mappings contain a cycle."
+      }
+    },
+    {
+      "name": "noncanonical mapping",
+      "context": "invalid-mapping",
+      "input": "src/link/file.ts",
+      "expected": {
+        "ok": false,
+        "code": "INVALID_MAPPING",
+        "message": "Path aliases and redirects must be canonical repository-relative paths."
+      }
+    },
+    {
+      "name": "invalid workspace",
+      "context": "invalid-workspace",
+      "input": "src/index.ts",
+      "expected": {
+        "ok": false,
+        "code": "INVALID_WORKSPACE",
+        "message": "Workspace must be a canonical non-empty slug."
+      }
+    },
+    {
+      "name": "relative repository root",
+      "context": "relative-root",
+      "input": "src/index.ts",
+      "expected": {
+        "ok": false,
+        "code": "ROOT_NOT_ABSOLUTE",
+        "message": "Repository root must be an absolute path for the selected platform."
+      }
+    }
+  ]
+}

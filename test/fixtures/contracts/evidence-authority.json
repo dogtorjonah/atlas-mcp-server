@@ -1,0 +1,304 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "matching current source and verified snapshot",
+      "input": {
+        "sourceObserved": true,
+        "sourceHash": "sha1:source-v1",
+        "indexedHash": "sha1:source-v1",
+        "verifiedSnapshot": true,
+        "inferredRelationship": true,
+        "setCompleteness": "complete"
+      },
+      "expected": {
+        "resolution_rule": "current_disk_source_overrides_indexed_metadata_on_conflict",
+        "current_source": {
+          "authority": "authoritative",
+          "state": "current",
+          "sha1": "sha1:source-v1",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "indexed_metadata": {
+          "freshness": "fresh",
+          "recorded_sha1": "sha1:source-v1",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "changelog": {
+          "freshness": "verified",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "facts": {
+          "current_parsed_source": {
+            "freshness": "current",
+            "confidence": "high",
+            "completeness": "complete",
+            "authoritative": true
+          },
+          "verified_snapshot": {
+            "freshness": "verified",
+            "confidence": "high",
+            "completeness": "complete",
+            "authoritative": true
+          },
+          "pending_narration": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "not_applicable",
+            "authoritative": false
+          },
+          "historical_deleted_artifact": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "not_applicable",
+            "authoritative": false
+          },
+          "inferred_relationship": {
+            "freshness": "inferred",
+            "confidence": "medium",
+            "completeness": "complete",
+            "authoritative": false
+          },
+          "incomplete_set": {
+            "freshness": "current",
+            "confidence": "high",
+            "completeness": "complete",
+            "authoritative": false
+          }
+        },
+        "summary": {
+          "authority": "mixed",
+          "freshness": "current",
+          "confidence": "high",
+          "completeness": "complete"
+        }
+      }
+    },
+    {
+      "name": "stale indexed metadata cannot override current source",
+      "input": {
+        "sourceObserved": true,
+        "sourceHash": "sha1:source-v2",
+        "indexedHash": "sha1:index-v1",
+        "incompleteSet": false
+      },
+      "expected": {
+        "resolution_rule": "current_disk_source_overrides_indexed_metadata_on_conflict",
+        "current_source": {
+          "authority": "authoritative",
+          "state": "current",
+          "sha1": "sha1:source-v2",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "indexed_metadata": {
+          "freshness": "stale",
+          "recorded_sha1": "sha1:index-v1",
+          "confidence": "low",
+          "completeness": "unknown"
+        },
+        "changelog": {
+          "freshness": "unknown",
+          "confidence": "unknown",
+          "completeness": "unknown"
+        },
+        "facts": {
+          "current_parsed_source": {
+            "freshness": "current",
+            "confidence": "high",
+            "completeness": "complete",
+            "authoritative": true
+          },
+          "verified_snapshot": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "unknown",
+            "authoritative": false
+          },
+          "pending_narration": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "not_applicable",
+            "authoritative": false
+          },
+          "historical_deleted_artifact": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "not_applicable",
+            "authoritative": false
+          },
+          "inferred_relationship": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "not_applicable",
+            "authoritative": false
+          },
+          "incomplete_set": {
+            "freshness": "current",
+            "confidence": "high",
+            "completeness": "complete",
+            "authoritative": false
+          }
+        },
+        "summary": {
+          "authority": "mixed",
+          "freshness": "current",
+          "confidence": "high",
+          "completeness": "complete"
+        }
+      }
+    },
+    {
+      "name": "missing source preserves historical Atlas evidence",
+      "input": {
+        "sourceObserved": false,
+        "sourceMissing": true,
+        "indexedHash": "sha1:source-v1",
+        "historicalArtifact": true,
+        "changelogObserved": true,
+        "setCompleteness": "complete"
+      },
+      "expected": {
+        "resolution_rule": "current_disk_source_overrides_indexed_metadata_on_conflict",
+        "current_source": {
+          "authority": "unavailable",
+          "state": "missing",
+          "sha1": null,
+          "confidence": "high",
+          "completeness": "unknown"
+        },
+        "indexed_metadata": {
+          "freshness": "historical_tombstone",
+          "recorded_sha1": "sha1:source-v1",
+          "confidence": "medium",
+          "completeness": "unknown"
+        },
+        "changelog": {
+          "freshness": "historical",
+          "confidence": "medium",
+          "completeness": "complete"
+        },
+        "facts": {
+          "current_parsed_source": {
+            "freshness": "missing",
+            "confidence": "unknown",
+            "completeness": "unknown",
+            "authoritative": false
+          },
+          "verified_snapshot": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "unknown",
+            "authoritative": false
+          },
+          "pending_narration": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "not_applicable",
+            "authoritative": false
+          },
+          "historical_deleted_artifact": {
+            "freshness": "historical",
+            "confidence": "medium",
+            "completeness": "complete",
+            "authoritative": false
+          },
+          "inferred_relationship": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "not_applicable",
+            "authoritative": false
+          },
+          "incomplete_set": {
+            "freshness": "current",
+            "confidence": "high",
+            "completeness": "complete",
+            "authoritative": false
+          }
+        },
+        "summary": {
+          "authority": "atlas_store",
+          "freshness": "historical",
+          "confidence": "medium",
+          "completeness": "complete"
+        }
+      }
+    },
+    {
+      "name": "partial inferred set stays non-authoritative",
+      "input": {
+        "sourceObserved": false,
+        "inferredRelationship": true,
+        "setCompleteness": "partial"
+      },
+      "expected": {
+        "resolution_rule": "current_disk_source_overrides_indexed_metadata_on_conflict",
+        "current_source": {
+          "authority": "not_observed",
+          "state": "not_observed",
+          "sha1": null,
+          "confidence": "unknown",
+          "completeness": "unknown"
+        },
+        "indexed_metadata": {
+          "freshness": "unverified",
+          "recorded_sha1": null,
+          "confidence": "unknown",
+          "completeness": "partial"
+        },
+        "changelog": {
+          "freshness": "unknown",
+          "confidence": "unknown",
+          "completeness": "unknown"
+        },
+        "facts": {
+          "current_parsed_source": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "unknown",
+            "authoritative": false
+          },
+          "verified_snapshot": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "unknown",
+            "authoritative": false
+          },
+          "pending_narration": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "not_applicable",
+            "authoritative": false
+          },
+          "historical_deleted_artifact": {
+            "freshness": "unknown",
+            "confidence": "unknown",
+            "completeness": "not_applicable",
+            "authoritative": false
+          },
+          "inferred_relationship": {
+            "freshness": "inferred",
+            "confidence": "medium",
+            "completeness": "partial",
+            "authoritative": false
+          },
+          "incomplete_set": {
+            "freshness": "unknown",
+            "confidence": "low",
+            "completeness": "partial",
+            "authoritative": false
+          }
+        },
+        "summary": {
+          "authority": "unknown",
+          "freshness": "unknown",
+          "confidence": "medium",
+          "completeness": "partial"
+        }
+      }
+    }
+  ]
+}

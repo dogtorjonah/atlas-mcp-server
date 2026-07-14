@@ -28,7 +28,7 @@ import {
 } from '../db.js';
 import type { SourceHighlight } from '../types.js';
 
-// ── Types (Step 3a) ────────────────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────────────────
 
 export const atlasDiffInputSchema = z.object({
   file_path: z.string().min(1).describe('File path to diff'),
@@ -99,7 +99,7 @@ export interface SnapshotResult {
   truncated: boolean;
 }
 
-// ── Resolution (Step 3b) ───────────────────────────────────────────────────
+// ── Resolution ─────────────────────────────────────────────────────────────
 
 interface ResolvedEndpoint {
   content: string;
@@ -400,7 +400,7 @@ function resolveEndpoint(
   return { error: `Unrecognized endpoint value: "${endpoint}". Use changelog_id, ISO timestamp, 'prev', or 'latest'.` };
 }
 
-// ── Diff Engine (Step 3c) ──────────────────────────────────────────────────
+// ── Diff Engine ────────────────────────────────────────────────────────────
 
 /**
  * Lightweight unified diff implementation (Myers-like).
@@ -854,7 +854,7 @@ function formatSnapshotResult(result: SnapshotResult): string {
   return parts.join('\n');
 }
 
-// ── Tool Registration (Step 3d) ────────────────────────────────────────────
+// ── Tool Registration ──────────────────────────────────────────────────────
 
 export function registerDiffTool(server: McpServer, runtime: AtlasRuntime): void {
   toolWithDescription(server)(

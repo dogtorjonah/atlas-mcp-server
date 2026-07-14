@@ -233,7 +233,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         );
       }
 
-      // ── Step 0: Acquire atlas file claim ────────────────────────────────
+      // ── Acquire atlas file claim ────────────────────────────────────────
       // Prevents concurrent atlas_commit writes to the same file. When 10
       // agents enrich the atlas in parallel, two can race on the same file —
       // both read the existing record, both merge, second write stomps first.
@@ -254,7 +254,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       }
 
       try {
-        // ── Step 1: Write changelog entry ──────────────────────────────────
+        // ── Write changelog entry ──────────────────────────────────────────
         const resolvedSha = commit_sha ?? resolveCommitSha(file_path, runtime.config.sourceRoot);
         const entry = insertAtlasChangelog(runtime.db, {
           workspace: runtime.config.workspace,
@@ -273,7 +273,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
           source: 'atlas_commit',
         });
 
-        // ── Step 2: Inline atlas_files update (required) ───────────────────
+        // ── Inline atlas_files update (required) ───────────────────────────
         // Read existing record to merge with — we only overwrite fields the
         // agent explicitly provided, preserving everything else.
         const existing = getAtlasFile(runtime.db, runtime.config.workspace, file_path);
@@ -315,7 +315,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
           last_extracted: new Date().toISOString(),
         });
 
-        // ── Step 3: Coverage audit — what's still empty after merge? ───────
+        // ── Coverage audit — what's still empty after merge? ───────────────
         // The whole point of atlas_commit is filling structured fields. If the
         // record is still hollow after this commit, the agent needs to know.
         const stillEmpty: string[] = [];
@@ -333,7 +333,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         const filledCount = totalFields - stillEmpty.length;
         const coveragePct = Math.round((filledCount / totalFields) * 100);
 
-        // ── Step 4: Build response ─────────────────────────────────────────
+        // ── Build response ─────────────────────────────────────────────────
         // Quiet mode (default): single compact line saves ~500-1K tokens per commit.
         // Pass quiet=false for verbose feedback with coverage warnings and changelog hints.
         if (quiet !== false) {

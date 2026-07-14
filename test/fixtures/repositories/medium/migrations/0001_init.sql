@@ -1,0 +1,4 @@
+CREATE TABLE fixture_users (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE
+);

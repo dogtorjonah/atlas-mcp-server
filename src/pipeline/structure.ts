@@ -29,6 +29,7 @@ export interface StructureResult {
   edgesExtracted: number;
   filesProcessed: number;
   filesSkipped: number;
+  parseFailures: Array<{ filePath: string; message: string }>;
 }
 
 export interface AstReferenceInput {
@@ -90,7 +91,13 @@ export async function runStructure(
 ): Promise<StructureResult> {
   if (!isTreeSitterAvailable()) {
     console.warn('[structure] tree-sitter not available, skipping structural analysis');
-    return { symbolsExtracted: 0, edgesExtracted: 0, filesProcessed: 0, filesSkipped: files.length };
+    return {
+      symbolsExtracted: 0,
+      edgesExtracted: 0,
+      filesProcessed: 0,
+      filesSkipped: files.length,
+      parseFailures: [],
+    };
   }
 
   onProgress?.('Starting structural analysis...', 0);
@@ -99,6 +106,7 @@ export async function runStructure(
   const allEdges: RawEdge[] = [];
   let filesProcessed = 0;
   let filesSkipped = 0;
+  const parseFailures: Array<{ filePath: string; message: string }> = [];
 
   // Phase 1: Parse all files and extract symbols + raw edges
   for (let i = 0; i < files.length; i++) {
@@ -117,8 +125,12 @@ export async function runStructure(
         continue;
       }
 
+      const root = parseSource(source, lang).rootNode;
+      if (root.hasError) {
+        throw new Error('Tree-sitter reported a syntax error.');
+      }
       const { symbols, edges } = extractFromTree(
-        parseSource(source, lang).rootNode,
+        root,
         file.filePath,
         lang,
       );
@@ -129,6 +141,7 @@ export async function runStructure(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[structure] Failed to parse ${file.filePath}: ${msg}`);
+      parseFailures.push({ filePath: file.filePath, message: msg });
       filesSkipped++;
     }
 
@@ -174,6 +187,7 @@ export async function runStructure(
     edgesExtracted: resolvedEdges.length,
     filesProcessed,
     filesSkipped,
+    parseFailures,
   };
 }
 

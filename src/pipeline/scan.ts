@@ -120,7 +120,8 @@ function assignCluster(relativePath: string): string {
 }
 
 async function discoverFiles(dir: string, files: string[] = []): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
+  const entries = (await fs.readdir(dir, { withFileTypes: true }))
+    .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
   for (const entry of entries) {
     if (EXCLUDE_DIRS.has(entry.name)) {
       continue;
@@ -205,16 +206,21 @@ function extractExports(content: string): ScanExportEntry[] {
   return exports;
 }
 
-async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
+function isWithinRoot(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (
+    relative !== '..'
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative)
+  );
 }
 
-async function resolveRelativeImport(filePath: string, importPath: string, projectRoot: string): Promise<string | null> {
+async function resolveRelativeImport(
+  filePath: string,
+  importPath: string,
+  projectRoot: string,
+  realProjectRoot: string,
+): Promise<string | null> {
   const fileDir = path.dirname(filePath);
   let resolved = path.resolve(fileDir, importPath);
 
@@ -232,8 +238,12 @@ async function resolveRelativeImport(filePath: string, importPath: string, proje
   }
 
   for (const candidate of candidates) {
-    if (candidate.startsWith(projectRoot) && await pathExists(candidate)) {
-      return candidate;
+    if (!isWithinRoot(candidate, projectRoot)) continue;
+    try {
+      const realCandidate = await fs.realpath(candidate);
+      if (isWithinRoot(realCandidate, realProjectRoot)) return realCandidate;
+    } catch {
+      // Try the next supported extension or index candidate.
     }
   }
 
@@ -251,7 +261,21 @@ export async function runScan(
   options?: { force?: boolean },
 ): Promise<ScanResult> {
   const absoluteRoot = path.resolve(sourceRoot);
+  const realRoot = await fs.realpath(absoluteRoot);
   const sourceFiles = await discoverFiles(absoluteRoot);
+  const sourceEntries = sourceFiles.map((absolutePath) => ({
+    absolutePath,
+    relativePath: path.relative(absoluteRoot, absolutePath)
+      .replaceAll(path.sep, '/')
+      .normalize('NFC'),
+  }));
+  const canonicalPaths = new Set<string>();
+  for (const entry of sourceEntries) {
+    if (canonicalPaths.has(entry.relativePath)) {
+      throw new Error(`Canonical repository path collision: ${entry.relativePath}`);
+    }
+    canonicalPaths.add(entry.relativePath);
+  }
   const files: ScanFileInfo[] = [];
   const importEdges: AtlasImportEdgeRecord[] = [];
   const progress = createPhaseProgressReporter([{
@@ -260,10 +284,9 @@ export async function runScan(
     total: sourceFiles.length,
   }]);
 
-  for (const absolutePath of sourceFiles) {
+  for (const { absolutePath, relativePath } of sourceEntries) {
     progress.begin('scan');
     const content = await fs.readFile(absolutePath, 'utf8');
-    const relativePath = path.relative(absoluteRoot, absolutePath).replaceAll(path.sep, '/');
     const imports = extractImports(content);
     const exports = extractExports(content);
     const cluster = assignCluster(relativePath);
@@ -271,11 +294,11 @@ export async function runScan(
     const fileHash = hashContent(content);
     const resolvedImports: string[] = [];
     for (const importPath of imports) {
-      const resolved = await resolveRelativeImport(absolutePath, importPath, absoluteRoot);
+      const resolved = await resolveRelativeImport(absolutePath, importPath, absoluteRoot, realRoot);
       if (!resolved) {
         continue;
       }
-      resolvedImports.push(path.relative(absoluteRoot, resolved).replaceAll(path.sep, '/'));
+      resolvedImports.push(path.relative(realRoot, resolved).replaceAll(path.sep, '/').normalize('NFC'));
     }
 
     for (const target_file of resolvedImports) {

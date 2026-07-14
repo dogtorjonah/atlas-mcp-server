@@ -1,0 +1,94 @@
+{
+  "files": [
+    "migrations/0001_init.sql",
+    "migrations/0002_add_notes.sql",
+    "package.json",
+    "src/cycle/a.ts",
+    "src/cycle/b.ts",
+    "src/dead.ts",
+    "src/format.ts",
+    "src/index.ts",
+    "src/malformed.ts",
+    "src/math/add.ts",
+    "src/math/index.ts",
+    "src/rename/new-name.ts"
+  ],
+  "entrypoints": ["src/index.ts"],
+  "edges": [
+    { "from": "src/cycle/a.ts", "to": "src/cycle/b.ts", "kind": "import" },
+    { "from": "src/cycle/b.ts", "to": "src/cycle/a.ts", "kind": "import" },
+    { "from": "src/index.ts", "to": "src/cycle/a.ts", "kind": "import" },
+    { "from": "src/index.ts", "to": "src/format.ts", "kind": "import" },
+    { "from": "src/index.ts", "to": "src/math/index.ts", "kind": "import" },
+    { "from": "src/index.ts", "to": "src/math/index.ts", "kind": "re-export" },
+    { "from": "src/index.ts", "to": "src/rename/new-name.ts", "kind": "import" },
+    { "from": "src/math/index.ts", "to": "src/math/add.ts", "kind": "re-export" }
+  ],
+  "cycles": [
+    ["src/cycle/a.ts", "src/cycle/b.ts"]
+  ],
+  "dead_files": ["src/dead.ts"],
+  "dead_exports": ["src/math/add.ts#unusedMultiply"],
+  "malformed_files": [
+    { "file_path": "src/malformed.ts", "reason": "missing-expression" }
+  ],
+  "migrations": ["0001_init.sql", "0002_add_notes.sql"],
+  "queries": {
+    "format total": ["src/format.ts", "src/index.ts"],
+    "renamed value": ["src/rename/new-name.ts", "src/index.ts"],
+    "sum values": ["src/math/add.ts", "src/index.ts"]
+  },
+  "history": [
+    {
+      "id": 1,
+      "created_at": "2025-01-02T03:04:05.000Z",
+      "file_path": "src/rename/old-name.ts",
+      "summary": "Added the original named value.",
+      "breaking_changes": false
+    },
+    {
+      "id": 2,
+      "created_at": "2025-01-02T03:06:00.000Z",
+      "file_path": "src/rename/new-name.ts",
+      "summary": "Renamed the value module without changing behavior.",
+      "breaking_changes": false
+    },
+    {
+      "id": 3,
+      "created_at": "2025-01-02T03:07:00.000Z",
+      "file_path": "src/math/add.ts",
+      "summary": "Documented numeric overflow as a caller-visible hazard.",
+      "breaking_changes": false
+    },
+    {
+      "id": 4,
+      "created_at": "2025-01-02T03:08:00.000Z",
+      "file_path": "src/index.ts",
+      "summary": "Exported the calculation entrypoint.",
+      "breaking_changes": true
+    }
+  ],
+  "metadata": [
+    {
+      "file_path": "src/index.ts",
+      "hazards": [],
+      "source_highlights": [
+        { "label": "Public calculation entrypoint", "start_line": 8, "end_line": 11 }
+      ]
+    },
+    {
+      "file_path": "src/math/add.ts",
+      "hazards": ["JavaScript number addition may overflow safe integer precision."],
+      "source_highlights": [
+        { "label": "Addition primitive", "start_line": 1, "end_line": 3 }
+      ]
+    },
+    {
+      "file_path": "src/format.ts",
+      "hazards": [],
+      "source_highlights": [
+        { "label": "Stable total formatter", "start_line": 1, "end_line": 3 }
+      ]
+    }
+  ]
+}

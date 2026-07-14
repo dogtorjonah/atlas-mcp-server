@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "plans": [
+    {
+      "name": "default graph cycle budget",
+      "action": "cycles",
+      "args": {},
+      "expected": {
+        "action": "cycles",
+        "max_work_units": 20000,
+        "deadline_ms": 5000,
+        "node_limit": 4000,
+        "edge_limit": 8000,
+        "planned_work_units": 20000,
+        "strategy": "weighted_action_cost",
+        "cost_model": {
+          "unit": "work_units",
+          "node_unit_cost": 3,
+          "edge_unit_cost": 1,
+          "expected_edges_per_node": 2
+        }
+      }
+    },
+    {
+      "name": "expensive smell scan stays under budget",
+      "action": "audit:smells",
+      "args": {
+        "max_work_units": 100,
+        "deadline_ms": 999
+      },
+      "expected": {
+        "action": "audit:smells",
+        "max_work_units": 100,
+        "deadline_ms": 999,
+        "node_limit": 9,
+        "edge_limit": 27,
+        "planned_work_units": 99,
+        "strategy": "weighted_action_cost",
+        "cost_model": {
+          "unit": "work_units",
+          "node_unit_cost": 5,
+          "edge_unit_cost": 2,
+          "expected_edges_per_node": 3
+        }
+      }
+    },
+    {
+      "name": "out-of-range controls clamp visibly",
+      "action": "search",
+      "args": {
+        "max_work_units": 0,
+        "deadline_ms": 999999
+      },
+      "expected": {
+        "action": "search",
+        "max_work_units": 1,
+        "deadline_ms": 30000,
+        "node_limit": 0,
+        "edge_limit": 0,
+        "planned_work_units": 0,
+        "strategy": "weighted_action_cost",
+        "cost_model": {
+          "unit": "work_units",
+          "node_unit_cost": 3,
+          "edge_unit_cost": 1,
+          "expected_edges_per_node": 2
+        }
+      }
+    }
+  ],
+  "read_splits": [
+    {
+      "total_limit": 10,
+      "source_count": 3,
+      "expected": [4, 3, 3]
+    },
+    {
+      "total_limit": 2,
+      "source_count": 4,
+      "expected": [1, 1, 0, 0]
+    },
+    {
+      "total_limit": 12,
+      "source_count": 0,
+      "expected": []
+    }
+  ]
+}
