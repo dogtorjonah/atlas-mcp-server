@@ -1,18 +1,46 @@
 {
   "name": "@voxxo/atlas",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
-  "description": "Standalone MCP server for the Voxxo codebase atlas.",
-  "license": "AGPL-3.0-only",
+  "description": "Deterministic, local-first code intelligence for agents, CLIs, and MCP clients.",
+  "license": "MIT",
+  "author": "Jonah",
+  "homepage": "https://github.com/dogtorjonah/atlas-mcp-server#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dogtorjonah/atlas-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dogtorjonah/atlas-mcp-server/issues"
+  },
+  "keywords": [
+    "code-intelligence",
+    "mcp",
+    "model-context-protocol",
+    "sqlite",
+    "static-analysis"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "files": [
     "dist",
     "migrations/*.sql",
     "README.md",
     "ARCHITECTURE.md",
     "PUBLIC_API.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "UPGRADING.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "RELICENSE_AUDIT.md",
+    "THIRD_PARTY_NOTICES.md",
+    "docs",
+    "examples",
+    "sbom.cdx.json"
   ],
   "exports": {
     ".": "./dist/index.js",
@@ -21,7 +49,13 @@
     "./paths": "./dist/paths.js",
     "./pipeline": "./dist/pipeline/index.js",
     "./persistence": "./dist/persistence/index.js",
-    "./indexing": "./dist/indexing/index.js"
+    "./indexing": "./dist/indexing/index.js",
+    "./service": "./dist/service/index.js",
+    "./writeback": "./dist/writeback/index.js",
+    "./admin": "./dist/admin/index.js",
+    "./embedding": "./dist/embedding/index.js",
+    "./mcp": "./dist/mcp/index.js",
+    "./node": "./dist/node/index.js"
   },
   "bin": {
     "atlas": "./dist/server.js",
@@ -29,13 +63,20 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:adapter": "tsc -p packages/context-warp-adapter/tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch src/server.ts",
     "init": "tsx src/server.ts init",
     "start": "node dist/server.js",
-    "test": "node --import tsx --test src/__tests__/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=1 src/__tests__/*.test.ts",
+    "test:adapter": "node --import tsx --test packages/context-warp-adapter/test/*.test.ts",
+    "test:adapter:package": "node scripts/adapter-smoke.mjs",
+    "test:performance": "node scripts/performance-gates.mjs",
     "test:package": "node scripts/package-smoke.mjs",
-    "prepack": "npm run build"
+    "test:release": "node scripts/release-regression.mjs",
+    "sbom": "node scripts/generate-sbom.mjs",
+    "sbom:check": "node scripts/generate-sbom.mjs --check",
+    "prepack": "npm run sbom:check && npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

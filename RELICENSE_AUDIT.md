@@ -155,6 +155,9 @@ a behavior-only specification, or covered by written permission before release.
 - [x] Internal Forge-derived heuristic provenance is identified.
 - [x] Operator explicitly directed the MIT transition.
 - [x] External and private source origins are release-blocking by policy.
-- [ ] Third-party dependency/license audit is complete.
-- [ ] Exact packed artifact contains the MIT license and no excluded material.
+- [x] Third-party dependency/license audit is complete; the refreshed lock has
+      no unknown or incompatible license and the production registry audit has
+      zero known vulnerabilities.
+- [x] Exact packed artifact contains the MIT license, reviewed notices and SBOM,
+      and no excluded material under the package allowlist.
 - [ ] Final release commit/tag and public metadata agree on MIT.

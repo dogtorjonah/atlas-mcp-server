@@ -9,6 +9,140 @@ export type AtlasJsonValue =
 export type AtlasJsonObject = Readonly<Record<string, AtlasJsonValue>>;
 
 export type AtlasOutputFormat = 'json' | 'text';
+
+/** Per-call controls accepted by the public async application service. */
+export interface AtlasOperationOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  requestId?: string;
+}
+
+export interface AtlasCommitSourceHighlightInput extends AtlasLineRange {
+  id?: number;
+  label: string;
+  content?: string;
+}
+
+export interface AtlasCommitRequest {
+  filePath: string;
+  changelogEntry: string;
+  idempotencyKey?: string;
+  expectedVersion?: string;
+  purpose?: string;
+  blurb?: string;
+  cluster?: string;
+  tags?: readonly string[];
+  conventions?: readonly string[];
+  keyTypes?: readonly string[];
+  dataFlows?: readonly string[];
+  publicApi?: readonly AtlasPublicApiEntry[];
+  sourceHighlights?: readonly AtlasCommitSourceHighlightInput[];
+  patterns?: readonly string[];
+  hazards?: readonly string[];
+  patternsAdded?: readonly string[];
+  patternsRemoved?: readonly string[];
+  hazardsAdded?: readonly string[];
+  hazardsRemoved?: readonly string[];
+  breakingChanges?: boolean;
+  repositoryRevision?: string;
+  attribution?: AtlasAttribution;
+  evidence?: readonly AtlasProvenanceEvidence[];
+  responseDetail?: 'compact' | 'full';
+}
+
+export interface AtlasCommitWireRequest {
+  file_path: string;
+  changelog_entry: string;
+  idempotency_key?: string;
+  expected_version?: string;
+  purpose?: string;
+  blurb?: string;
+  cluster?: string;
+  tags?: readonly string[];
+  conventions?: readonly string[];
+  key_types?: readonly string[];
+  data_flows?: readonly string[];
+  public_api?: readonly AtlasPublicApiEntry[];
+  source_highlights?: readonly {
+    id?: number;
+    label: string;
+    start_line: number;
+    end_line: number;
+    content?: string;
+  }[];
+  patterns?: readonly string[];
+  hazards?: readonly string[];
+  patterns_added?: readonly string[];
+  patterns_removed?: readonly string[];
+  hazards_added?: readonly string[];
+  hazards_removed?: readonly string[];
+  breaking_changes?: boolean;
+  repository_revision?: string;
+  attribution?: AtlasAttributionWire;
+  evidence?: readonly AtlasProvenanceEvidenceWire[];
+  response_detail?: 'compact' | 'full';
+}
+
+export type AtlasAdminAction = 'index' | 'migrate' | 'backup' | 'doctor' | 'workspace_list';
+
+export type AtlasAdminRequest =
+  | {
+      action: 'index';
+      paths?: readonly string[];
+      full?: boolean;
+      phase?: 'all' | 'discovery' | 'parse' | 'crossref' | 'embeddings';
+      force?: boolean;
+    }
+  | {
+      action: 'migrate';
+      dryRun?: boolean;
+      backup?: boolean;
+      targetGeneration?: string;
+    }
+  | { action: 'backup'; label?: string; protected?: boolean }
+  | { action: 'doctor'; checks?: readonly string[]; includeOptional?: boolean }
+  | { action: 'workspace_list'; includeUnavailable?: boolean };
+
+export type AtlasAdminData =
+  | {
+      action: 'index';
+      mode: 'full' | 'incremental' | 'repair';
+      filesProcessed: number;
+      filesFailed: number;
+      filesSkipped: number;
+      changedFiles: number;
+      deletedFiles: number;
+      invalidatedFiles: number;
+      complete: boolean;
+    }
+  | {
+      action: 'migrate';
+      dryRun: boolean;
+      schemaGeneration: string;
+      migrationHead: string | null;
+      applied: readonly string[];
+      backupId?: string;
+    }
+  | {
+      action: 'backup';
+      backupId: string;
+      createdAt: string;
+      integrity: 'ok';
+      migrationHead: string | null;
+      protected: boolean;
+      label?: string;
+    }
+  | {
+      action: 'doctor';
+      healthy: boolean;
+      schemaGeneration: string;
+      migrationHead: string | null;
+      checks: readonly { name: string; status: 'pass' | 'warn'; message: string }[];
+    }
+  | {
+      action: 'workspace_list';
+      workspaces: readonly string[];
+    };
 export type AtlasCapabilityStatus = 'available' | 'degraded' | 'unavailable' | 'disabled';
 export type AtlasVerificationStatus = 'pending' | 'verified' | 'disputed' | 'needs_review';
 export type AtlasEvidenceConfidence = 'high' | 'medium' | 'low' | 'unknown';
@@ -440,7 +574,9 @@ export type AtlasQueryAction =
   | 'patterns'
   | 'history'
   | 'catalog'
-  | 'ask';
+  | 'ask'
+  | 'snapshot'
+  | 'diff';
 
 export type AtlasHistoryMode = 'entries' | 'count' | 'timeline' | 'group';
 export type AtlasHistoryOrder = 'asc' | 'desc';
@@ -558,6 +694,23 @@ export interface AtlasAskRequest extends AtlasQueryBaseRequest {
   characterBudget?: number;
 }
 
+export interface AtlasSnapshotRequest extends AtlasQueryBaseRequest {
+  action: 'snapshot';
+  filePath?: string;
+  changelogId?: number;
+  at?: string | number;
+  maxLines?: number;
+}
+
+export interface AtlasDiffRequest extends AtlasQueryBaseRequest {
+  action: 'diff';
+  filePath?: string;
+  changelogId?: number;
+  from?: string | number;
+  to?: string | number;
+  contextLines?: number;
+}
+
 export type AtlasQueryRequest =
   | AtlasSearchRequest
   | AtlasLookupRequest
@@ -569,7 +722,9 @@ export type AtlasQueryRequest =
   | AtlasPatternsRequest
   | AtlasHistoryRequest
   | AtlasCatalogRequest
-  | AtlasAskRequest;
+  | AtlasAskRequest
+  | AtlasSnapshotRequest
+  | AtlasDiffRequest;
 
 interface AtlasQueryWireBase {
   action: AtlasQueryAction;
@@ -659,6 +814,19 @@ export type AtlasQueryWireRequest =
       path_prefix?: string;
       include_test_files?: boolean;
       character_budget?: number;
+    })
+  | (AtlasQueryWireBase & {
+      action: 'snapshot';
+      file_path: string;
+      at?: string | number;
+      max_lines?: number;
+    })
+  | (AtlasQueryWireBase & {
+      action: 'diff';
+      file_path: string;
+      from?: string | number;
+      to?: string | number;
+      context_lines?: number;
     });
 
 export type AtlasGraphAction =
@@ -800,6 +968,41 @@ export type AtlasGraphWireRequest =
     })
   | (AtlasGraphWireBase & { action: 'cluster'; cluster: string });
 
+export type AtlasAuditAction = 'gaps' | 'smells' | 'hotspots';
+export type AtlasAuditSeverity = 'low' | 'medium' | 'high';
+
+export interface AtlasAuditRequest {
+  action: AtlasAuditAction;
+  workspace?: string;
+  format?: AtlasOutputFormat;
+  cluster?: string;
+  filePath?: string;
+  limit?: number;
+  cursor?: string;
+  includeTestFiles?: boolean;
+  gapTypes?: readonly string[];
+  minSeverity?: AtlasAuditSeverity;
+  since?: string;
+  topN?: number;
+  weights?: Readonly<Record<string, number>>;
+}
+
+export interface AtlasAuditWireRequest {
+  action: AtlasAuditAction;
+  workspace?: string;
+  format?: AtlasOutputFormat;
+  cluster?: string;
+  file_path?: string;
+  limit?: number;
+  cursor?: string;
+  include_test_files?: boolean;
+  gap_types?: readonly string[];
+  min_severity?: AtlasAuditSeverity;
+  since?: string;
+  top_n?: number;
+  weights?: Readonly<Record<string, number>>;
+}
+
 export type AtlasErrorCode =
   | 'ATLAS_INVALID_REQUEST'
   | 'ATLAS_UNSUPPORTED_ACTION'
@@ -868,6 +1071,17 @@ export interface AtlasResultMeta {
   extensions: readonly AtlasProvenanceEvidenceWire[];
 }
 
+export interface AtlasCommitData {
+  status: 'committed';
+  filePath: string;
+  changelogId: number;
+  version: string;
+  updatedFields: readonly string[];
+  idempotencyStatus: 'recorded' | 'not_requested';
+  evidenceCount: number;
+  verificationStatus: AtlasVerificationStatus;
+}
+
 export interface AtlasSuccess<T> {
   protocol_version: '1';
   ok: true;
@@ -885,6 +1099,30 @@ export interface AtlasFailure {
 }
 
 export type AtlasResult<T> = AtlasSuccess<T> | AtlasFailure;
+
+export interface AtlasQueryData {
+  action: AtlasQueryAction;
+  items: readonly AtlasJsonObject[];
+  record?: AtlasJsonObject;
+  source?: AtlasJsonObject;
+  summary: AtlasJsonObject;
+}
+
+export interface AtlasGraphData {
+  action: AtlasGraphAction;
+  nodes: readonly string[];
+  edges: readonly AtlasJsonObject[];
+  paths: readonly (readonly string[])[];
+  cycles: readonly (readonly string[])[];
+  symbols: readonly AtlasJsonObject[];
+  summary: AtlasJsonObject;
+}
+
+export interface AtlasAuditData {
+  action: AtlasAuditAction;
+  items: readonly AtlasJsonObject[];
+  summary: AtlasJsonObject;
+}
 
 export interface AtlasListData<T> {
   items: readonly T[];

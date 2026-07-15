@@ -1,0 +1,647 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "bench_81ada375",
+  "observed_at": "2026-07-14T23:18:31.901Z",
+  "source_root": "/home/jonah/atlas-mcp-server",
+  "preregistration": "docs/benchmarks/atlas-1.0-preregistration.json",
+  "model": null,
+  "provider": null,
+  "token_telemetry": null,
+  "cost": {
+    "value": 0,
+    "unit": "usd",
+    "basis": "No model or paid provider was invoked."
+  },
+  "baseline": {
+    "id": "baseline-rg",
+    "tool": "ripgrep 15.1.0 (rev af60c2de9d)",
+    "tasks": [
+      {
+        "id": "persistence-recovery",
+        "query": "worker supervisor crash recovery backpressure persistence",
+        "files": [
+          "ARCHITECTURE.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "PROMOTION_INVENTORY.md",
+          "src/__tests__/persistenceSupervisor.test.ts",
+          "src/persistence/types.ts"
+        ],
+        "duration_ms": 114.233,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "path-safety",
+        "query": "canonical path traversal symlink repository escape",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "src/core/paths.ts",
+          "test/fixtures/contracts/path-canonicalization.json",
+          "ARCHITECTURE.md",
+          "src/__tests__/fixtureRepositories.test.ts"
+        ],
+        "duration_ms": 75.159,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0.5,
+          "reciprocal_rank": 0.5,
+          "success": true,
+          "matched_gold_files": [
+            "src/core/paths.ts"
+          ]
+        }
+      },
+      {
+        "id": "evidence-authority",
+        "query": "current disk source overrides indexed metadata evidence authority",
+        "files": [
+          "ARCHITECTURE.md",
+          "CONTRIBUTING.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "docs/TOOLS.md",
+          "IMPLEMENTATION_SEQUENCE.md"
+        ],
+        "duration_ms": 74.203,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "query-bounds",
+        "query": "opaque cursor pagination character budget bounded query plan",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "src/core/queryControl.ts",
+          "ARCHITECTURE.md",
+          "PUBLIC_API.md",
+          "src/__tests__/coreQueryControl.test.ts"
+        ],
+        "duration_ms": 75.273,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 0.5,
+          "success": true,
+          "matched_gold_files": [
+            "src/core/queryControl.ts"
+          ]
+        }
+      },
+      {
+        "id": "hazard-hygiene",
+        "query": "hazard deduplication polarity shrapnel sanitation",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "src/core/quality.ts",
+          "AGENTS.md",
+          "ARCHITECTURE.md",
+          "docs/DATA_HANDLING.md"
+        ],
+        "duration_ms": 77.494,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 0.5,
+          "success": true,
+          "matched_gold_files": [
+            "src/core/quality.ts"
+          ]
+        }
+      },
+      {
+        "id": "operator-memory-upgrade",
+        "query": "operator memory migration preserves dedupe changelog relationships",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "MIGRATION_PLAN.md",
+          "migrations/0012_jonah_memory.sql",
+          "PRIVATE_DATA_PREFLIGHT.md",
+          "PROMOTION_INVENTORY.md"
+        ],
+        "duration_ms": 81.501,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "atomic-writeback",
+        "query": "atomic idempotent commit transaction provenance evidence",
+        "files": [
+          "ARCHITECTURE.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "IMPLEMENTATION_SEQUENCE.md",
+          "MIGRATION_PLAN.md",
+          "src/db.ts"
+        ],
+        "duration_ms": 75.007,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "mcp-wire",
+        "query": "MCP structuredContent snake case wire conversion",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "PUBLIC_API.md",
+          "docs/TOOLS.md",
+          "src/__tests__/mcpAdapter.test.ts",
+          "src/core/types.ts"
+        ],
+        "duration_ms": 74.602,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "node-layout",
+        "query": "project local user global data layout workspace identity",
+        "files": [
+          "ARCHITECTURE.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "PUBLIC_API.md",
+          "src/__tests__/nodeHost.test.ts",
+          "src/node/layout.ts"
+        ],
+        "duration_ms": 76.64,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 0.2,
+          "success": true,
+          "matched_gold_files": [
+            "src/node/layout.ts"
+          ]
+        }
+      },
+      {
+        "id": "watch-coalescing",
+        "query": "watcher debounce coalesce rename deterministic batch",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "src/__tests__/indexingService.test.ts",
+          "IMPLEMENTATION_SEQUENCE.md",
+          "src/watcher.ts",
+          "ARCHITECTURE.md"
+        ],
+        "duration_ms": 73.681,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "embedding-identity",
+        "query": "embedding model dimension normalization identity mismatch",
+        "files": [
+          "ARCHITECTURE.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "IMPLEMENTATION_SEQUENCE.md",
+          "PROMOTION_INVENTORY.md",
+          "PUBLIC_API.md"
+        ],
+        "duration_ms": 76.623,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "snapshot-diff",
+        "query": "snapshot diff retained changelog id historical source",
+        "files": [
+          "ARCHITECTURE.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "docs/TOOLS.md",
+          "MIGRATION_PLAN.md",
+          "PROMOTION_INVENTORY.md"
+        ],
+        "duration_ms": 79.982,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      }
+    ],
+    "summary": {
+      "task_count": 12,
+      "macro_recall_at_5": 0.292,
+      "mean_reciprocal_rank": 0.142,
+      "tasks_with_any_gold": 4,
+      "failures": 0,
+      "mean_query_ms": 79.533,
+      "query_ms": [
+        114.233,
+        75.159,
+        74.203,
+        75.273,
+        77.494,
+        81.501,
+        75.007,
+        74.602,
+        76.64,
+        73.681,
+        76.623,
+        79.982
+      ]
+    }
+  },
+  "treatment": {
+    "id": "atlas-1-0",
+    "tool": "@voxxo/atlas@1.0.0",
+    "candidate_sha256": "16578a8a86665700e1221fc50f59711a16881c981cb7201da004121ecf5f57f0",
+    "install_ms": 30955.527,
+    "index_ms": 20401.698,
+    "index_result": {
+      "action": "index",
+      "mode": "incremental",
+      "filesProcessed": 140,
+      "filesFailed": 0,
+      "filesSkipped": 0,
+      "changedFiles": 140,
+      "deletedFiles": 0,
+      "invalidatedFiles": 140,
+      "complete": true
+    },
+    "tasks": [
+      {
+        "id": "persistence-recovery",
+        "query": "worker supervisor crash recovery backpressure persistence",
+        "files": [],
+        "duration_ms": 2.78,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "path-safety",
+        "query": "canonical path traversal symlink repository escape",
+        "files": [],
+        "duration_ms": 0.361,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "evidence-authority",
+        "query": "current disk source overrides indexed metadata evidence authority",
+        "files": [],
+        "duration_ms": 0.614,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "query-bounds",
+        "query": "opaque cursor pagination character budget bounded query plan",
+        "files": [],
+        "duration_ms": 0.358,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "hazard-hygiene",
+        "query": "hazard deduplication polarity shrapnel sanitation",
+        "files": [],
+        "duration_ms": 0.547,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "operator-memory-upgrade",
+        "query": "operator memory migration preserves dedupe changelog relationships",
+        "files": [],
+        "duration_ms": 0.442,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "atomic-writeback",
+        "query": "atomic idempotent commit transaction provenance evidence",
+        "files": [],
+        "duration_ms": 0.551,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "mcp-wire",
+        "query": "MCP structuredContent snake case wire conversion",
+        "files": [],
+        "duration_ms": 0.512,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "node-layout",
+        "query": "project local user global data layout workspace identity",
+        "files": [],
+        "duration_ms": 0.404,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "watch-coalescing",
+        "query": "watcher debounce coalesce rename deterministic batch",
+        "files": [],
+        "duration_ms": 0.309,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "embedding-identity",
+        "query": "embedding model dimension normalization identity mismatch",
+        "files": [],
+        "duration_ms": 0.281,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "snapshot-diff",
+        "query": "snapshot diff retained changelog id historical source",
+        "files": [],
+        "duration_ms": 0.394,
+        "failure": {
+          "code": "ATLAS_INVALID_REQUEST",
+          "message": "Unknown request field: characterBudget.",
+          "retryable": false
+        },
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      }
+    ],
+    "summary": {
+      "task_count": 12,
+      "macro_recall_at_5": 0,
+      "mean_reciprocal_rank": 0,
+      "tasks_with_any_gold": 0,
+      "failures": 12,
+      "mean_query_ms": 0.629,
+      "query_ms": [
+        2.78,
+        0.361,
+        0.614,
+        0.358,
+        0.547,
+        0.442,
+        0.551,
+        0.512,
+        0.404,
+        0.309,
+        0.281,
+        0.394
+      ]
+    }
+  },
+  "delta": {
+    "macro_recall_at_5": -0.292,
+    "mean_reciprocal_rank": -0.142,
+    "tasks_with_any_gold": -4,
+    "mean_query_ms": -78.904
+  },
+  "verdict": "treatment_did_not_pass_preregistered_point_estimate_gate",
+  "limitations": [
+    "The twelve tasks and gold files were authored from one repository and are not a population sample.",
+    "The baseline is deterministic ripgrep file retrieval, not the frozen 0.1 Atlas implementation or an agent using arbitrary shell exploration.",
+    "Wall latency includes different work: ripgrep performs per-query scans while Atlas pays a separate one-time install and index cost.",
+    "The source tree is the promotion working tree rather than a clean public release commit.",
+    "No LLM judge or provider was used; token and provider-cost comparisons are not applicable."
+  ]
+}

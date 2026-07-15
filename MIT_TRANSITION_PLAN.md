@@ -147,13 +147,13 @@ an artifact rebuilt after verification.
 
 ## Acceptance checklist
 
-- [ ] Root license text is standard MIT with `Copyright (c) 2026 Jonah`.
-- [ ] Root manifest, lockfile, SBOM, tarball manifest, badges, and registries say
-      exactly `MIT`.
-- [ ] Release notes state that prior AGPL grants remain valid.
-- [ ] No ambiguous dual-license expression applies to Atlas project source.
+- [x] Root license text is standard MIT with `Copyright (c) 2026 Jonah`.
+- [ ] Root manifest, lockfile, SBOM, and tarball manifest say exactly `MIT`;
+      public registry and repository previews remain a post-publish check.
+- [x] Release notes state that prior AGPL grants remain valid.
+- [x] No ambiguous dual-license expression applies to Atlas project source.
 - [ ] Prior release tag/commit remains immutable and identifiable.
-- [ ] Historical AGPL wording appears only in explicit transition records.
-- [ ] Dependency licenses and nested notices remain distinct.
+- [x] Historical AGPL wording appears only in explicit transition records.
+- [x] Dependency licenses and nested notices remain distinct.
 - [ ] Exact verified artifact is the artifact tagged and published.
 - [ ] Public GitHub/npm/MCP metadata is re-read after publication and reports MIT.

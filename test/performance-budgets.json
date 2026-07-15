@@ -1,0 +1,13 @@
+{
+  "cold_query_ms_max": 1500,
+  "warm_query_p95_ms_max": 150,
+  "mixed_load_event_loop_p99_ms_max": 100,
+  "mixed_load_total_ms_max": 5000,
+  "index_files_per_second_min": 3,
+  "database_bytes_per_file_max": 1000000,
+  "rss_growth_bytes_max": 268435456,
+  "queue_backpressure_ms_max": 250,
+  "shutdown_ms_max": 3000,
+  "package_tarball_bytes_max": 3000000,
+  "package_unpacked_bytes_max": 12000000
+}

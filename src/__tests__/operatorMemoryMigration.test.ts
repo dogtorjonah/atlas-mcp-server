@@ -16,6 +16,7 @@ const testDir = path.dirname(fileURLToPath(import.meta.url));
 const migrationDir = path.resolve(testDir, '../../migrations');
 const operatorMigration = '0017_operator_memory.sql';
 const persistenceMigration = '0018_persistence_runtime.sql';
+const writebackMigration = '0019_commit_evidence.sql';
 const standalone010Migrations = [
   '0001_init.sql',
   '0002_changelog.sql',
@@ -78,7 +79,8 @@ async function createLegacyMigrationDirectory(directory: string): Promise<string
   const migrationFiles = (await readdir(migrationDir))
     .filter((filename) => filename.endsWith('.sql')
       && filename !== operatorMigration
-      && filename !== persistenceMigration)
+      && filename !== persistenceMigration
+      && filename !== writebackMigration)
     .sort();
   assert.deepEqual(migrationFiles, standalone010Migrations);
 
@@ -115,7 +117,7 @@ test('fresh migration head exposes only operator-memory storage and indexes', as
       const applied = db.prepare(
         'SELECT filename FROM atlas_schema_migrations ORDER BY filename',
       ).all() as Array<{ filename: string }>;
-      assert.equal(applied.at(-1)?.filename, persistenceMigration);
+      assert.equal(applied.at(-1)?.filename, writebackMigration);
 
       const changelog = insertAtlasChangelog(db, {
         workspace: 'fresh',

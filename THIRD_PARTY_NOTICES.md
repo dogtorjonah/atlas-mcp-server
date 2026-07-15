@@ -18,12 +18,12 @@ and regenerate this audit before publishing.
 
 ## Lockfile census
 
-The current lock contains 176 top-level installed package entries and no unknown
+The current lock contains 177 installed package entries and no unknown
 license identifiers.
 
 | License expression | Packages | MIT-release disposition |
 | --- | ---: | --- |
-| `MIT` | 151 | Compatible; preserve notices when redistributed |
+| `MIT` | 152 | Compatible; preserve notices when redistributed |
 | `ISC` | 10 | Compatible; preserve notices when redistributed |
 | `Apache-2.0` | 3 | Compatible; preserve license and any NOTICE content when redistributed |
 | `BSD-3-Clause` | 3 | Compatible; preserve notice and conditions |
@@ -56,8 +56,8 @@ proprietary, or unknown package license appears in the locked dependency graph.
 | Dependency | Locked version | License |
 | --- | ---: | --- |
 | `@types/better-sqlite3` | `7.6.13` | MIT |
-| `@types/node` | `20.19.37` | MIT |
-| `tsx` | `4.21.0` | MIT |
+| `@types/node` | `20.19.43` | MIT |
+| `tsx` | `4.23.1` | MIT |
 | `typescript` | `5.9.3` | Apache-2.0 |
 
 Development dependencies are not included in the npm package, but their licenses

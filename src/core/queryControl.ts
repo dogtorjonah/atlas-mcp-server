@@ -32,6 +32,8 @@ const DEFAULT_ACTION_LIMITS = {
   history: 50,
   catalog: 100,
   ask: 20,
+  snapshot: 1,
+  diff: 1,
 } as const satisfies Readonly<Record<AtlasQueryAction, number>>;
 
 const DEFAULT_CHARACTER_BUDGETS = {
@@ -46,6 +48,8 @@ const DEFAULT_CHARACTER_BUDGETS = {
   history: 20_000,
   catalog: 16_000,
   ask: 24_000,
+  snapshot: 50_000,
+  diff: 100_000,
 } as const satisfies Readonly<Record<AtlasQueryAction, number>>;
 
 export interface AtlasQueryControlArgs {

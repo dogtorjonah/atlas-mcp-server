@@ -10,6 +10,9 @@ import type {
   AtlasIndexRepositoryRequest,
   AtlasIndexRepositoryResult,
 } from '../indexing/types.js';
+import type { AtlasReadOutcome, AtlasReadRequest } from '../retrieval/types.js';
+import type { AtlasCommitData } from '../core/types.js';
+import type { AtlasCommitCommand } from '../writeback/types.js';
 
 export const ATLAS_WORKER_PROTOCOL_VERSION = 1 as const;
 
@@ -111,7 +114,7 @@ export type AtlasWorkerInboundMessage =
   | { type: 'cancel'; requestId: string }
   | { type: 'close' };
 
-export interface AtlasOperationOptions {
+export interface AtlasStoreOperationOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
   idempotencyKey?: string;
@@ -123,6 +126,8 @@ export interface AtlasBackupRecord {
   path: string;
   integrity: 'ok';
   migrationHead: string | null;
+  label?: string;
+  protected: boolean;
 }
 
 export interface AtlasStoreStatus {
@@ -147,6 +152,7 @@ export interface AtlasDbOperationPayloads {
   health: Record<string, never>;
   'get-file': { workspace: string; filePath: string };
   'list-files': { workspace: string };
+  'list-workspaces': Record<string, never>;
   'search-fts': { workspace: string; query: string; limit?: number };
   'upsert-file': { workspace: string; file: AtlasFileUpsertInput };
   'delete-file': { workspace: string; filePath: string };
@@ -158,38 +164,44 @@ export interface AtlasDbOperationPayloads {
     changelogId: number | null;
   };
   'index-repository': AtlasIndexRepositoryRequest;
-  backup: Record<string, never>;
+  retrieve: AtlasReadRequest;
+  'commit-file': AtlasCommitCommand;
+  backup: { label?: string; protected?: boolean };
 }
 
 export interface AtlasDbOperationResults {
   health: AtlasHealthResult;
   'get-file': AtlasFileRecord | null;
   'list-files': AtlasFileRecord[];
+  'list-workspaces': string[];
   'search-fts': AtlasSearchHit[];
   'upsert-file': null;
   'delete-file': boolean;
   'insert-changelog': AtlasChangelogRecord;
   'insert-snapshot': AtlasFileSnapshot | null;
   'index-repository': AtlasIndexRepositoryResult;
+  retrieve: AtlasReadOutcome;
+  'commit-file': AtlasCommitData;
   backup: AtlasBackupRecord;
 }
 
 export type AtlasDbOperation = keyof AtlasDbOperationPayloads;
 
-export type AtlasDbReadOperation = 'health' | 'get-file' | 'list-files' | 'search-fts';
+export type AtlasDbReadOperation = 'health' | 'get-file' | 'list-files' | 'list-workspaces' | 'search-fts' | 'retrieve';
 export type AtlasDbWriteOperation =
   | 'upsert-file'
   | 'delete-file'
   | 'insert-changelog'
   | 'insert-snapshot'
-  | 'index-repository';
+  | 'index-repository'
+  | 'commit-file';
 
 export interface AtlasStore {
   readonly status: AtlasStoreStatus;
   execute<Operation extends AtlasDbOperation>(
     operation: Operation,
     payload: AtlasDbOperationPayloads[Operation],
-    options?: AtlasOperationOptions,
+    options?: AtlasStoreOperationOptions,
   ): Promise<AtlasDbOperationResults[Operation]>;
   close(): Promise<void>;
 }

@@ -7,6 +7,8 @@ export interface AtlasIndexRepositoryRequest {
   concurrency?: number;
   /** Fixed ISO clock used by deterministic fixtures and reproducible indexing runs. */
   now?: string;
+  paths?: readonly string[];
+  phase?: 'full' | 'crossref';
 }
 
 export type AtlasIndexFailureStage = 'scan' | 'parse' | 'flow' | 'crossref' | 'repair';

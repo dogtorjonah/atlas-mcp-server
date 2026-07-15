@@ -31,8 +31,8 @@ test('real worker owns SQLite and preserves read-your-writes plus idempotency', 
 
   const health = await store.health();
   assert.equal(health.integrity, 'ok');
-  assert.equal(health.migrationHead, '0018_persistence_runtime.sql');
-  assert.equal(health.migrationCount, 19);
+  assert.equal(health.migrationHead, '0019_commit_evidence.sql');
+  assert.equal(health.migrationCount, 20);
 
   const file = {
     workspace: 'repo',
@@ -49,6 +49,10 @@ test('real worker owns SQLite and preserves read-your-writes plus idempotency', 
     }, { idempotencyKey: 'file-1' }),
     errorCode('ATLAS_CONFLICT'),
   );
+  await store.upsertFile({
+    workspace: 'other-repo',
+    file: { ...file, workspace: 'other-repo' },
+  }, { idempotencyKey: 'file-1' });
 
   assert.equal((await store.getFile({ workspace: 'repo', filePath: 'src/index.ts' }))?.purpose,
     'exercise lexical persistence');
@@ -95,7 +99,7 @@ test('a frozen 0.1.0 database upgrades in place and receives checksums', async (
   const oldMigrations = path.join(directory, 'old-migrations');
   await cp(migrationDir, oldMigrations, {
     recursive: true,
-    filter: (source) => !path.basename(source).startsWith('0018_'),
+    filter: (source) => !/^001[89]_/u.test(path.basename(source)),
   });
   const dbPath = path.join(directory, 'atlas.sqlite');
   const legacy = openAtlasDatabase({ dbPath, migrationDir: oldMigrations });
@@ -109,7 +113,7 @@ test('a frozen 0.1.0 database upgrades in place and receives checksums', async (
   const upgraded = await openSqliteAtlasStore({ dbPath, migrationDir });
   assert.equal((await upgraded.getFile({ workspace: 'repo', filePath: 'legacy.ts' }))?.purpose,
     'upgrade sentinel');
-  assert.equal((await upgraded.health()).migrationCount, 19);
+  assert.equal((await upgraded.health()).migrationCount, 20);
   await upgraded.close();
 
   const verified = openAtlasDatabase({ dbPath, migrationDir });

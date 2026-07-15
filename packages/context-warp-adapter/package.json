@@ -1,0 +1,39 @@
+{
+  "name": "@voxxo/atlas-context-warp",
+  "version": "1.0.0",
+  "description": "Optional digest-only Context Warp provenance adapter for Atlas.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Jonah",
+  "homepage": "https://github.com/dogtorjonah/atlas-mcp-server/tree/main/packages/context-warp-adapter#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dogtorjonah/atlas-mcp-server.git",
+    "directory": "packages/context-warp-adapter"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@voxxo/atlas": "^1.0.0",
+    "context-warp-drive": "^0.1.0"
+  }
+}

@@ -7,7 +7,7 @@ import {
   type AtlasDbOperationPayloads,
   type AtlasDbOperationResults,
   type AtlasDbReadOperation,
-  type AtlasOperationOptions,
+  type AtlasStoreOperationOptions,
   type AtlasScheduler,
   type AtlasWorkerEndpoint,
   type AtlasWorkerRequest,
@@ -32,7 +32,9 @@ const readOperations = new Set<AtlasDbOperation>([
   'health',
   'get-file',
   'list-files',
+  'list-workspaces',
   'search-fts',
+  'retrieve',
 ] satisfies AtlasDbReadOperation[]);
 
 const maintenanceOperations = new Set<AtlasDbOperation>(['backup']);
@@ -100,7 +102,7 @@ export class AtlasWorkerSupervisor {
   execute<Operation extends AtlasDbOperation>(
     operation: Operation,
     payload: AtlasDbOperationPayloads[Operation],
-    options: AtlasOperationOptions = {},
+    options: AtlasStoreOperationOptions = {},
   ): Promise<AtlasDbOperationResults[Operation]> {
     if (this.closed) {
       return Promise.reject(new AtlasPersistenceError({

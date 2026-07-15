@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "npx",
+      "args": [
+        "--yes",
+        "--package",
+        "@voxxo/atlas@1",
+        "atlas",
+        "mcp",
+        "--source-root",
+        "/absolute/path/to/repository"
+      ]
+    }
+  }
+}

@@ -1,0 +1,700 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "bench_81ada375",
+  "run_label": "post-fix-ranking-replication",
+  "candidate_relation": "post_preregistration_replication_candidate",
+  "preregistered_candidate_sha256": "16578a8a86665700e1221fc50f59711a16881c981cb7201da004121ecf5f57f0",
+  "evaluated_candidate_sha256": "e1f5ac26ab8423a1bcd4842a75c5ed71219dd354ca41440a7486ced5d364e652",
+  "observed_at": "2026-07-14T23:31:09.761Z",
+  "source_root": "/home/jonah/atlas-mcp-server",
+  "preregistration": "docs/benchmarks/atlas-1.0-preregistration.json",
+  "model": null,
+  "provider": null,
+  "token_telemetry": null,
+  "cost": {
+    "value": 0,
+    "unit": "usd",
+    "basis": "No model or paid provider was invoked."
+  },
+  "baseline": {
+    "id": "baseline-rg",
+    "tool": "ripgrep 15.1.0 (rev af60c2de9d)",
+    "tasks": [
+      {
+        "id": "persistence-recovery",
+        "query": "worker supervisor crash recovery backpressure persistence",
+        "files": [
+          "ARCHITECTURE.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "PROMOTION_INVENTORY.md",
+          "src/__tests__/persistenceSupervisor.test.ts",
+          "src/persistence/types.ts"
+        ],
+        "duration_ms": 102.5,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "path-safety",
+        "query": "canonical path traversal symlink repository escape",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "src/core/paths.ts",
+          "test/fixtures/contracts/path-canonicalization.json",
+          "ARCHITECTURE.md",
+          "src/__tests__/fixtureRepositories.test.ts"
+        ],
+        "duration_ms": 71.585,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0.5,
+          "reciprocal_rank": 0.5,
+          "success": true,
+          "matched_gold_files": [
+            "src/core/paths.ts"
+          ]
+        }
+      },
+      {
+        "id": "evidence-authority",
+        "query": "current disk source overrides indexed metadata evidence authority",
+        "files": [
+          "ARCHITECTURE.md",
+          "CONTRIBUTING.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "docs/TOOLS.md",
+          "IMPLEMENTATION_SEQUENCE.md"
+        ],
+        "duration_ms": 81.676,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "query-bounds",
+        "query": "opaque cursor pagination character budget bounded query plan",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "src/core/queryControl.ts",
+          "ARCHITECTURE.md",
+          "PUBLIC_API.md",
+          "src/__tests__/coreQueryControl.test.ts"
+        ],
+        "duration_ms": 73.297,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 0.5,
+          "success": true,
+          "matched_gold_files": [
+            "src/core/queryControl.ts"
+          ]
+        }
+      },
+      {
+        "id": "hazard-hygiene",
+        "query": "hazard deduplication polarity shrapnel sanitation",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "src/core/quality.ts",
+          "AGENTS.md",
+          "ARCHITECTURE.md",
+          "docs/DATA_HANDLING.md"
+        ],
+        "duration_ms": 76.634,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 0.5,
+          "success": true,
+          "matched_gold_files": [
+            "src/core/quality.ts"
+          ]
+        }
+      },
+      {
+        "id": "operator-memory-upgrade",
+        "query": "operator memory migration preserves dedupe changelog relationships",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "MIGRATION_PLAN.md",
+          "migrations/0012_jonah_memory.sql",
+          "PRIVATE_DATA_PREFLIGHT.md",
+          "PROMOTION_INVENTORY.md"
+        ],
+        "duration_ms": 71.988,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "atomic-writeback",
+        "query": "atomic idempotent commit transaction provenance evidence",
+        "files": [
+          "ARCHITECTURE.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "IMPLEMENTATION_SEQUENCE.md",
+          "MIGRATION_PLAN.md",
+          "src/db.ts"
+        ],
+        "duration_ms": 72.698,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "mcp-wire",
+        "query": "MCP structuredContent snake case wire conversion",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "PUBLIC_API.md",
+          "docs/TOOLS.md",
+          "src/__tests__/ftsRanking.test.ts",
+          "src/__tests__/mcpAdapter.test.ts"
+        ],
+        "duration_ms": 76.985,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "node-layout",
+        "query": "project local user global data layout workspace identity",
+        "files": [
+          "ARCHITECTURE.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "PUBLIC_API.md",
+          "src/__tests__/nodeHost.test.ts",
+          "src/node/layout.ts"
+        ],
+        "duration_ms": 81.595,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 0.2,
+          "success": true,
+          "matched_gold_files": [
+            "src/node/layout.ts"
+          ]
+        }
+      },
+      {
+        "id": "watch-coalescing",
+        "query": "watcher debounce coalesce rename deterministic batch",
+        "files": [
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "src/__tests__/indexingService.test.ts",
+          "IMPLEMENTATION_SEQUENCE.md",
+          "src/watcher.ts",
+          "ARCHITECTURE.md"
+        ],
+        "duration_ms": 72.653,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "embedding-identity",
+        "query": "embedding model dimension normalization identity mismatch",
+        "files": [
+          "ARCHITECTURE.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "IMPLEMENTATION_SEQUENCE.md",
+          "PROMOTION_INVENTORY.md",
+          "PUBLIC_API.md"
+        ],
+        "duration_ms": 68.522,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "snapshot-diff",
+        "query": "snapshot diff retained changelog id historical source",
+        "files": [
+          "ARCHITECTURE.md",
+          "docs/benchmarks/atlas-1.0-preregistration.json",
+          "docs/TOOLS.md",
+          "MIGRATION_PLAN.md",
+          "PROMOTION_INVENTORY.md"
+        ],
+        "duration_ms": 75.688,
+        "failure": null,
+        "warnings": [],
+        "evidence": null,
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      }
+    ],
+    "summary": {
+      "task_count": 12,
+      "macro_recall_at_5": 0.292,
+      "mean_reciprocal_rank": 0.142,
+      "tasks_with_any_gold": 4,
+      "failures": 0,
+      "mean_query_ms": 77.152,
+      "query_ms": [
+        102.5,
+        71.585,
+        81.676,
+        73.297,
+        76.634,
+        71.988,
+        72.698,
+        76.985,
+        81.595,
+        72.653,
+        68.522,
+        75.688
+      ]
+    }
+  },
+  "treatment": {
+    "id": "atlas-1-0",
+    "tool": "@voxxo/atlas@1.0.0",
+    "candidate_sha256": "e1f5ac26ab8423a1bcd4842a75c5ed71219dd354ca41440a7486ced5d364e652",
+    "install_ms": 29832.896,
+    "index_ms": 20517.089,
+    "index_result": {
+      "action": "index",
+      "mode": "incremental",
+      "filesProcessed": 140,
+      "filesFailed": 0,
+      "filesSkipped": 0,
+      "changedFiles": 140,
+      "deletedFiles": 0,
+      "invalidatedFiles": 140,
+      "complete": true
+    },
+    "tasks": [
+      {
+        "id": "persistence-recovery",
+        "query": "worker supervisor crash recovery backpressure persistence",
+        "files": [
+          "src/persistence/types.ts",
+          "src/persistence/supervisor.ts",
+          "src/persistence/sqliteWorker.ts",
+          "src/persistence/sqliteWorkerBootstrap.ts",
+          "migrations/0007_changelog_recovery_key.sql"
+        ],
+        "duration_ms": 10.945,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 0.5,
+          "success": true,
+          "matched_gold_files": [
+            "src/persistence/supervisor.ts",
+            "src/persistence/sqliteWorker.ts"
+          ]
+        }
+      },
+      {
+        "id": "path-safety",
+        "query": "canonical path traversal symlink repository escape",
+        "files": [
+          "src/core/paths.ts",
+          "src/indexing/types.ts",
+          "packages/context-warp-adapter/src/index.ts",
+          "src/pipeline/index.ts",
+          "src/tools/commitPayload.ts"
+        ],
+        "duration_ms": 7.356,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0.5,
+          "reciprocal_rank": 1,
+          "success": true,
+          "matched_gold_files": [
+            "src/core/paths.ts"
+          ]
+        }
+      },
+      {
+        "id": "evidence-authority",
+        "query": "current disk source overrides indexed metadata evidence authority",
+        "files": [
+          "src/core/evidenceAuthority.ts",
+          "src/core/quality.ts",
+          "src/core/types.ts",
+          "packages/context-warp-adapter/src/index.ts",
+          "src/tools/commitIdentityValidation.ts"
+        ],
+        "duration_ms": 6.003,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 1,
+          "success": true,
+          "matched_gold_files": [
+            "src/core/evidenceAuthority.ts"
+          ]
+        }
+      },
+      {
+        "id": "query-bounds",
+        "query": "opaque cursor pagination character budget bounded query plan",
+        "files": [
+          "src/core/queryControl.ts",
+          "src/core/types.ts",
+          "packages/context-warp-adapter/src/index.ts",
+          "src/tools/plan_context.ts",
+          "src/tools/cluster.ts"
+        ],
+        "duration_ms": 5.563,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 1,
+          "success": true,
+          "matched_gold_files": [
+            "src/core/queryControl.ts"
+          ]
+        }
+      },
+      {
+        "id": "hazard-hygiene",
+        "query": "hazard deduplication polarity shrapnel sanitation",
+        "files": [
+          "src/core/quality.ts",
+          "src/tools/hazardsAutoSync.ts",
+          "src/tools/structuralSymbols.ts",
+          "src/types.ts",
+          "src/core/types.ts"
+        ],
+        "duration_ms": 2.582,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 1,
+          "success": true,
+          "matched_gold_files": [
+            "src/core/quality.ts"
+          ]
+        }
+      },
+      {
+        "id": "operator-memory-upgrade",
+        "query": "operator memory migration preserves dedupe changelog relationships",
+        "files": [
+          "migrations/0017_operator_memory.sql",
+          "src/db.ts",
+          "migrations/0012_jonah_memory.sql",
+          "src/core/quality.ts",
+          "MIGRATION_PLAN.md"
+        ],
+        "duration_ms": 6.675,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0.5,
+          "reciprocal_rank": 1,
+          "success": true,
+          "matched_gold_files": [
+            "migrations/0017_operator_memory.sql"
+          ]
+        }
+      },
+      {
+        "id": "atomic-writeback",
+        "query": "atomic idempotent commit transaction provenance evidence",
+        "files": [
+          "packages/context-warp-adapter/src/index.ts",
+          "src/core/evidenceAuthority.ts",
+          "src/core/types.ts",
+          "migrations/0019_commit_evidence.sql",
+          "src/tools/commitResult.ts"
+        ],
+        "duration_ms": 5.926,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0.5,
+          "reciprocal_rank": 0.25,
+          "success": true,
+          "matched_gold_files": [
+            "migrations/0019_commit_evidence.sql"
+          ]
+        }
+      },
+      {
+        "id": "mcp-wire",
+        "query": "MCP structuredContent snake case wire conversion",
+        "files": [
+          "src/core/types.ts",
+          "src/vendor.d.ts",
+          "src/tools/diff.ts",
+          "src/tools/commitResult.ts",
+          "src/tools/history.ts"
+        ],
+        "duration_ms": 6.516,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0,
+          "reciprocal_rank": 0,
+          "success": false,
+          "matched_gold_files": []
+        }
+      },
+      {
+        "id": "node-layout",
+        "query": "project local user global data layout workspace identity",
+        "files": [
+          "src/node/layout.ts",
+          "src/node/host.ts",
+          "src/pipeline/structure.ts",
+          "src/pipeline/index.ts",
+          "src/core/types.ts"
+        ],
+        "duration_ms": 8.748,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 1,
+          "success": true,
+          "matched_gold_files": [
+            "src/node/layout.ts"
+          ]
+        }
+      },
+      {
+        "id": "watch-coalescing",
+        "query": "watcher debounce coalesce rename deterministic batch",
+        "files": [
+          "src/indexing/types.ts",
+          "src/indexing/watcher.ts",
+          "src/watcher.ts",
+          "src/embedding/types.ts",
+          "src/embeddings.ts"
+        ],
+        "duration_ms": 6.444,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 0.5,
+          "success": true,
+          "matched_gold_files": [
+            "src/indexing/watcher.ts"
+          ]
+        }
+      },
+      {
+        "id": "embedding-identity",
+        "query": "embedding model dimension normalization identity mismatch",
+        "files": [
+          "src/embedding/types.ts",
+          "src/embedding/controller.ts",
+          "ARCHITECTURE.md",
+          "src/embedding/index.ts",
+          "src/embeddings.ts"
+        ],
+        "duration_ms": 11.691,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 1,
+          "reciprocal_rank": 1,
+          "success": true,
+          "matched_gold_files": [
+            "src/embedding/types.ts",
+            "src/embedding/controller.ts"
+          ]
+        }
+      },
+      {
+        "id": "snapshot-diff",
+        "query": "snapshot diff retained changelog id historical source",
+        "files": [
+          "src/tools/diff.ts",
+          "src/db.ts",
+          "src/core/types.ts",
+          "src/tools/worktree.ts",
+          "src/types.ts"
+        ],
+        "duration_ms": 9.595,
+        "failure": null,
+        "warnings": [],
+        "evidence": {
+          "authority": "atlas_store",
+          "freshness": "unknown",
+          "confidence": "high",
+          "completeness": "complete"
+        },
+        "score": {
+          "recall_at_5": 0.5,
+          "reciprocal_rank": 1,
+          "success": true,
+          "matched_gold_files": [
+            "src/tools/diff.ts"
+          ]
+        }
+      }
+    ],
+    "summary": {
+      "task_count": 12,
+      "macro_recall_at_5": 0.75,
+      "mean_reciprocal_rank": 0.771,
+      "tasks_with_any_gold": 11,
+      "failures": 0,
+      "mean_query_ms": 7.337,
+      "query_ms": [
+        10.945,
+        7.356,
+        6.003,
+        5.563,
+        2.582,
+        6.675,
+        5.926,
+        6.516,
+        8.748,
+        6.444,
+        11.691,
+        9.595
+      ]
+    }
+  },
+  "delta": {
+    "macro_recall_at_5": 0.458,
+    "mean_reciprocal_rank": 0.629,
+    "tasks_with_any_gold": 7,
+    "mean_query_ms": -69.815
+  },
+  "verdict": "treatment_did_not_pass_preregistered_point_estimate_gate",
+  "limitations": [
+    "The twelve tasks and gold files were authored from one repository and are not a population sample.",
+    "The baseline is deterministic ripgrep file retrieval, not the frozen 0.1 Atlas implementation or an agent using arbitrary shell exploration.",
+    "Wall latency includes different work: ripgrep performs per-query scans while Atlas pays a separate one-time install and index cost.",
+    "The source tree is the promotion working tree rather than a clean public release commit.",
+    "No LLM judge or provider was used; token and provider-cost comparisons are not applicable.",
+    "The evaluated candidate was built after the preregistered run; tasks, controls, and scoring were retained unchanged, so this result is a labeled post-fix replication rather than the preregistered result."
+  ]
+}

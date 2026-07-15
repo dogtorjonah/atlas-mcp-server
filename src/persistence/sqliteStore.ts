@@ -11,7 +11,7 @@ import {
   type AtlasDbOperationPayloads,
   type AtlasDbOperationResults,
   type AtlasHealthResult,
-  type AtlasOperationOptions,
+  type AtlasStoreOperationOptions,
   type AtlasStore,
   type AtlasStoreStatus,
   type AtlasWorkerEndpoint,
@@ -64,7 +64,11 @@ class WorkerThreadEndpoint implements AtlasWorkerEndpoint {
     this.worker = new Worker(workerModuleUrl(), {
       workerData: options,
       execArgv: process.execArgv,
+      stdout: true,
+      stderr: true,
     });
+    this.worker.stdout?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
+    this.worker.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
     this.exitPromise = new Promise<number>((resolve) => {
       this.worker.once('exit', resolve);
     });
@@ -195,73 +199,107 @@ export class SqliteAtlasStore implements AtlasStore {
   execute<Operation extends AtlasDbOperation>(
     operation: Operation,
     payload: AtlasDbOperationPayloads[Operation],
-    options?: AtlasOperationOptions,
+    options?: AtlasStoreOperationOptions,
   ): Promise<AtlasDbOperationResults[Operation]> {
     return this.supervisor.execute(operation, payload, options);
   }
 
-  health(options?: AtlasOperationOptions): Promise<AtlasHealthResult> {
+  health(options?: AtlasStoreOperationOptions): Promise<AtlasHealthResult> {
     return this.execute('health', {}, options);
   }
 
   getFile(
     payload: AtlasDbOperationPayloads['get-file'],
-    options?: AtlasOperationOptions,
+    options?: AtlasStoreOperationOptions,
   ): Promise<AtlasDbOperationResults['get-file']> {
     return this.execute('get-file', payload, options);
   }
 
   listFiles(
     payload: AtlasDbOperationPayloads['list-files'],
-    options?: AtlasOperationOptions,
+    options?: AtlasStoreOperationOptions,
   ): Promise<AtlasDbOperationResults['list-files']> {
     return this.execute('list-files', payload, options);
   }
 
+  listWorkspaces(
+    options?: AtlasStoreOperationOptions,
+  ): Promise<AtlasDbOperationResults['list-workspaces']> {
+    return this.execute('list-workspaces', {}, options);
+  }
+
   searchLexical(
     payload: AtlasDbOperationPayloads['search-fts'],
-    options?: AtlasOperationOptions,
+    options?: AtlasStoreOperationOptions,
   ): Promise<AtlasDbOperationResults['search-fts']> {
     return this.execute('search-fts', payload, options);
   }
 
   upsertFile(
     payload: AtlasDbOperationPayloads['upsert-file'],
-    options?: AtlasOperationOptions,
+    options?: AtlasStoreOperationOptions,
   ): Promise<null> {
     return this.execute('upsert-file', payload, options);
   }
 
   deleteFile(
     payload: AtlasDbOperationPayloads['delete-file'],
-    options?: AtlasOperationOptions,
+    options?: AtlasStoreOperationOptions,
   ): Promise<boolean> {
     return this.execute('delete-file', payload, options);
   }
 
   insertChangelog(
     payload: AtlasDbOperationPayloads['insert-changelog'],
-    options?: AtlasOperationOptions,
+    options?: AtlasStoreOperationOptions,
   ): Promise<AtlasDbOperationResults['insert-changelog']> {
     return this.execute('insert-changelog', payload, options);
   }
 
   insertSnapshot(
     payload: AtlasDbOperationPayloads['insert-snapshot'],
-    options?: AtlasOperationOptions,
+    options?: AtlasStoreOperationOptions,
   ): Promise<AtlasDbOperationResults['insert-snapshot']> {
     return this.execute('insert-snapshot', payload, options);
   }
 
   indexRepository(
     payload: AtlasDbOperationPayloads['index-repository'],
-    options?: AtlasOperationOptions,
+    options?: AtlasStoreOperationOptions,
   ): Promise<AtlasDbOperationResults['index-repository']> {
     return this.execute('index-repository', payload, options);
   }
 
-  backup(options?: AtlasOperationOptions): Promise<AtlasBackupRecord> {
-    return this.execute('backup', {}, options);
+  retrieve(
+    payload: AtlasDbOperationPayloads['retrieve'],
+    options?: AtlasStoreOperationOptions,
+  ): Promise<AtlasDbOperationResults['retrieve']> {
+    return this.execute('retrieve', payload, options);
+  }
+
+  commit(
+    payload: AtlasDbOperationPayloads['commit-file'],
+    options?: AtlasStoreOperationOptions,
+  ): Promise<AtlasDbOperationResults['commit-file']> {
+    const requestKey = payload.request.idempotencyKey;
+    if (requestKey && options?.idempotencyKey && requestKey !== options.idempotencyKey) {
+      return Promise.reject(new AtlasPersistenceError({
+        code: 'ATLAS_INVALID_REQUEST',
+        message: 'Commit request and operation idempotency keys do not match.',
+        retryable: false,
+      }));
+    }
+    return this.execute('commit-file', payload, {
+      ...options,
+      ...(requestKey ? { idempotencyKey: requestKey } : {}),
+    });
+  }
+
+  backup(
+    payload: AtlasDbOperationPayloads['backup'] = {},
+    options?: AtlasStoreOperationOptions,
+  ): Promise<AtlasBackupRecord> {
+    return this.execute('backup', payload, options);
   }
 
   close(): Promise<void> {
@@ -274,3 +312,6 @@ export async function openSqliteAtlasStore(
 ): Promise<SqliteAtlasStore> {
   return SqliteAtlasStore.open(options);
 }
+
+/** Public factory name retained by the 1.x persistence contract. */
+export const createSqliteAtlasStore = openSqliteAtlasStore;

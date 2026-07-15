@@ -138,6 +138,7 @@ export interface AtlasChangelogQuery {
   since?: string;
   until?: string;
   verification_status?: string;
+  breaking?: boolean;
   breaking_only?: boolean;
   limit?: number;
   offset?: number;
@@ -1858,7 +1859,10 @@ function buildChangelogWhere(filters: AtlasChangelogQuery): ChangelogWhereResult
     whereParts.push('c.verification_status = ?');
     params.push(filters.verification_status);
   }
-  if (filters.breaking_only) {
+  if (filters.breaking != null) {
+    whereParts.push('c.breaking_changes = ?');
+    params.push(filters.breaking ? 1 : 0);
+  } else if (filters.breaking_only) {
     whereParts.push('c.breaking_changes = 1');
   }
 
@@ -1936,18 +1940,20 @@ export interface AtlasChangelogGroupEntry {
   latest: string | null;
 }
 
-const VALID_GROUP_COLUMNS = new Set(['file_path', 'cluster', 'author_name', 'author_engine', 'author_model', 'author_engine_type', 'verification_status']);
+const VALID_GROUP_COLUMNS = new Set(['file_path', 'cluster', 'author_instance_id', 'author_name', 'author_engine', 'author_model', 'author_engine_type', 'verification_status']);
 
 export function groupAtlasChangelog(
   db: AtlasDatabase,
   filters: AtlasChangelogQuery,
   groupBy: string,
   limit?: number,
+  offset?: number,
 ): AtlasChangelogGroupEntry[] {
   if (!VALID_GROUP_COLUMNS.has(groupBy)) return [];
   const { fromClause, whereSql, params } = buildChangelogWhere(filters);
   const column = `c.${groupBy}`;
   const effectiveLimit = Math.max(1, Math.min(limit ?? 500, 2000));
+  const effectiveOffset = Math.max(0, Math.min(Math.trunc(offset ?? 0), 100_000_000));
 
   const rows = db.prepare(
     `SELECT ${column} AS group_key, COUNT(*) AS count,
@@ -1956,8 +1962,8 @@ export function groupAtlasChangelog(
      WHERE ${whereSql}
      GROUP BY ${column}
      ORDER BY count DESC, group_key ASC
-     LIMIT ?`,
-  ).all(...params, effectiveLimit) as Array<{ group_key: string | null; count: number; earliest: string | null; latest: string | null }>;
+     LIMIT ? OFFSET ?`,
+  ).all(...params, effectiveLimit, effectiveOffset) as Array<{ group_key: string | null; count: number; earliest: string | null; latest: string | null }>;
 
   return rows.map(r => ({
     key: r.group_key ?? '(none)',
@@ -2256,20 +2262,22 @@ export function listSymbols(
   db: AtlasDatabase,
   workspace: string,
   filePath?: string,
+  limit?: number,
 ): AtlasSymbolRecord[] {
+  const boundedLimit = limit == null ? null : Math.max(1, Math.min(100_000, Math.trunc(limit)));
   const rows = (filePath
     ? db.prepare(
       `SELECT id, workspace, file_path, name, kind, exported, line_start, line_end, signature_hash
        FROM symbols
        WHERE workspace = ? AND file_path = ?
-       ORDER BY file_path ASC, name ASC`,
-    ).all(workspace, filePath)
+       ORDER BY file_path ASC, name ASC${boundedLimit == null ? '' : ' LIMIT ?'}`,
+    ).all(...(boundedLimit == null ? [workspace, filePath] : [workspace, filePath, boundedLimit]))
     : db.prepare(
       `SELECT id, workspace, file_path, name, kind, exported, line_start, line_end, signature_hash
        FROM symbols
        WHERE workspace = ?
-       ORDER BY file_path ASC, name ASC`,
-    ).all(workspace)) as Record<string, unknown>[];
+       ORDER BY file_path ASC, name ASC${boundedLimit == null ? '' : ' LIMIT ?'}`,
+    ).all(...(boundedLimit == null ? [workspace] : [workspace, boundedLimit]))) as Record<string, unknown>[];
 
   return rows.map((row) => ({
     id: Number(row.id ?? 0),
@@ -2288,22 +2296,24 @@ export function listReferences(
   db: AtlasDatabase,
   workspace: string,
   sourceFile?: string,
+  limit?: number,
 ): AtlasReferenceRecord[] {
+  const boundedLimit = limit == null ? null : Math.max(1, Math.min(100_000, Math.trunc(limit)));
   const rows = (sourceFile
     ? db.prepare(
       `SELECT id, workspace, source_symbol_id, target_symbol_id, edge_type,
               source_file, target_file, usage_count, confidence, provenance, last_verified
        FROM "references"
        WHERE workspace = ? AND source_file = ?
-       ORDER BY source_file ASC, target_file ASC, id ASC`,
-    ).all(workspace, sourceFile)
+       ORDER BY source_file ASC, target_file ASC, id ASC${boundedLimit == null ? '' : ' LIMIT ?'}`,
+    ).all(...(boundedLimit == null ? [workspace, sourceFile] : [workspace, sourceFile, boundedLimit]))
     : db.prepare(
       `SELECT id, workspace, source_symbol_id, target_symbol_id, edge_type,
               source_file, target_file, usage_count, confidence, provenance, last_verified
        FROM "references"
        WHERE workspace = ?
-       ORDER BY source_file ASC, target_file ASC, id ASC`,
-    ).all(workspace)) as Record<string, unknown>[];
+       ORDER BY source_file ASC, target_file ASC, id ASC${boundedLimit == null ? '' : ' LIMIT ?'}`,
+    ).all(...(boundedLimit == null ? [workspace] : [workspace, boundedLimit]))) as Record<string, unknown>[];
 
   return rows.map((row) => ({
     id: Number(row.id ?? 0),
@@ -2560,10 +2570,11 @@ export function upsertAtlasMeta(db: AtlasDatabase, input: AtlasMetaUpsertInput):
   );
 }
 
-export function listAtlasFiles(db: AtlasDatabase, workspace: string): AtlasFileRecord[] {
+export function listAtlasFiles(db: AtlasDatabase, workspace: string, limit?: number): AtlasFileRecord[] {
+  const boundedLimit = limit == null ? null : Math.max(1, Math.min(100_000, Math.trunc(limit)));
   const rows = db.prepare(
-    'SELECT * FROM atlas_files WHERE workspace = ? ORDER BY file_path ASC',
-  ).all(workspace) as Record<string, unknown>[];
+    `SELECT * FROM atlas_files WHERE workspace = ? ORDER BY file_path ASC${boundedLimit == null ? '' : ' LIMIT ?'}`,
+  ).all(...(boundedLimit == null ? [workspace] : [workspace, boundedLimit])) as Record<string, unknown>[];
   return rows.map(mapFileRecord);
 }
 
@@ -2602,10 +2613,11 @@ export function listAtlasExportRows(
     }));
 }
 
-export function listImportEdges(db: AtlasDatabase, workspace: string): AtlasImportEdgeRecord[] {
+export function listImportEdges(db: AtlasDatabase, workspace: string, limit?: number): AtlasImportEdgeRecord[] {
+  const boundedLimit = limit == null ? null : Math.max(1, Math.min(100_000, Math.trunc(limit)));
   return db.prepare(
-    'SELECT workspace, source_file, target_file FROM import_edges WHERE workspace = ?',
-  ).all(workspace) as AtlasImportEdgeRecord[];
+    `SELECT workspace, source_file, target_file FROM import_edges WHERE workspace = ? ORDER BY source_file ASC, target_file ASC${boundedLimit == null ? '' : ' LIMIT ?'}`,
+  ).all(...(boundedLimit == null ? [workspace] : [workspace, boundedLimit])) as AtlasImportEdgeRecord[];
 }
 
 export function listImportedBy(db: AtlasDatabase, workspace: string, targetFile: string): string[] {

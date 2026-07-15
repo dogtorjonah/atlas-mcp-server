@@ -98,6 +98,8 @@ test('explicit query actions route to bounded format, result, character, and wor
     { action: 'history' },
     { action: 'catalog' },
     { action: 'ask', query: 'How is query output bounded?' },
+    { action: 'snapshot', filePath: 'src/index.ts' },
+    { action: 'diff', filePath: 'src/index.ts', from: 'prev', to: 'latest' },
   ];
 
   for (const request of requests) {

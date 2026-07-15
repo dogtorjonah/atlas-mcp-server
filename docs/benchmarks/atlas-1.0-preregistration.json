@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "bench_81ada375",
+  "preregistered_at": "2026-07-14T23:14:04.314Z",
+  "outcomes_observed": false,
+  "goal": "Measure whether the exact @voxxo/atlas 1.0.0 candidate improves deterministic relevant-file recall on fixed code-navigation tasks in its own repository versus a ripgrep-only baseline.",
+  "source": {
+    "repository": "https://github.com/dogtorjonah/atlas-mcp-server",
+    "head_before_preregistration": "efd4681158c365c9e4209c2ae7145b8a07b3292a",
+    "working_tree": "The audited 1.0 promotion candidate plus this preregistration and its outcome-free runner. Both arms observe the same tree."
+  },
+  "candidate": {
+    "package": "@voxxo/atlas@1.0.0",
+    "tarball": "voxxo-atlas-1.0.0.tgz",
+    "sha256": "16578a8a86665700e1221fc50f59711a16881c981cb7201da004121ecf5f57f0",
+    "release_regression_status": "passed"
+  },
+  "controls": {
+    "task_order": "fixed as listed",
+    "maximum_results_per_task": 5,
+    "corpus": "The same repository working tree, honoring ignore files and excluding generated dependency/build/runtime directories.",
+    "baseline": "For each frozen term, ripgrep lists matching files. Files rank by number of distinct terms matched, then repository-relative POSIX path.",
+    "treatment": "The exact candidate performs one full index, then its structured search action answers each frozen query with includeTestFiles=true and limit=5.",
+    "model_or_judge": "none",
+    "token_or_cost_reporting": "not applicable; no provider is invoked and no token estimate is permitted",
+    "failure_policy": "Retain command failures, Atlas error results, warnings, incomplete result lists, ties, null findings, and negative treatment effects.",
+    "timing": "Wall-clock milliseconds are secondary environment-specific observations, not universal performance claims."
+  },
+  "metrics": {
+    "primary": "macro mean recall@5 over the twelve tasks",
+    "secondary": [
+      "tasks with at least one gold file retrieved",
+      "mean reciprocal rank of the first gold file",
+      "per-task wall latency",
+      "command or structured-operation failures",
+      "Atlas warnings and evidence completeness"
+    ],
+    "acceptance": {
+      "atlas_macro_recall_at_5_minimum": 0.8,
+      "higher_is_better": true,
+      "noninferiority_margin": 0.05,
+      "confidence_z": 1.96,
+      "interpretation": "A release claim requires the Atlas arm to clear 0.8 and to beat the baseline point estimate. With twelve authored tasks this is descriptive evidence, not a population-level superiority claim."
+    }
+  },
+  "tasks": [
+    {
+      "id": "persistence-recovery",
+      "query": "worker supervisor crash recovery backpressure persistence",
+      "baseline_terms": ["worker", "supervisor", "crash", "backpressure", "recovery"],
+      "gold_files": ["src/persistence/supervisor.ts", "src/persistence/sqliteWorker.ts"]
+    },
+    {
+      "id": "path-safety",
+      "query": "canonical path traversal symlink repository escape",
+      "baseline_terms": ["canonical", "traversal", "symlink", "escape"],
+      "gold_files": ["src/core/paths.ts", "src/pipeline/scan.ts"]
+    },
+    {
+      "id": "evidence-authority",
+      "query": "current disk source overrides indexed metadata evidence authority",
+      "baseline_terms": ["current", "source", "indexed", "authority"],
+      "gold_files": ["src/core/evidenceAuthority.ts"]
+    },
+    {
+      "id": "query-bounds",
+      "query": "opaque cursor pagination character budget bounded query plan",
+      "baseline_terms": ["cursor", "pagination", "character budget", "bounded"],
+      "gold_files": ["src/core/queryControl.ts"]
+    },
+    {
+      "id": "hazard-hygiene",
+      "query": "hazard deduplication polarity shrapnel sanitation",
+      "baseline_terms": ["hazard", "polarity", "shrapnel", "sanitation"],
+      "gold_files": ["src/core/quality.ts"]
+    },
+    {
+      "id": "operator-memory-upgrade",
+      "query": "operator memory migration preserves dedupe changelog relationships",
+      "baseline_terms": ["operator memory", "dedupe", "changelog", "migration"],
+      "gold_files": ["migrations/0017_operator_memory.sql", "src/__tests__/operatorMemoryMigration.test.ts"]
+    },
+    {
+      "id": "atomic-writeback",
+      "query": "atomic idempotent commit transaction provenance evidence",
+      "baseline_terms": ["atomic", "idempotent", "transaction", "provenance"],
+      "gold_files": ["src/writeback/commit.ts", "migrations/0019_commit_evidence.sql"]
+    },
+    {
+      "id": "mcp-wire",
+      "query": "MCP structuredContent snake case wire conversion",
+      "baseline_terms": ["structuredContent", "snake_case", "wire", "MCP"],
+      "gold_files": ["src/mcp/adapter.ts"]
+    },
+    {
+      "id": "node-layout",
+      "query": "project local user global data layout workspace identity",
+      "baseline_terms": ["dataMode", "user", "project", "workspace"],
+      "gold_files": ["src/node/layout.ts"]
+    },
+    {
+      "id": "watch-coalescing",
+      "query": "watcher debounce coalesce rename deterministic batch",
+      "baseline_terms": ["watcher", "debounce", "coalesce", "rename"],
+      "gold_files": ["src/indexing/watcher.ts"]
+    },
+    {
+      "id": "embedding-identity",
+      "query": "embedding model dimension normalization identity mismatch",
+      "baseline_terms": ["embedding", "dimension", "normalization", "model"],
+      "gold_files": ["src/embedding/controller.ts", "src/embedding/types.ts"]
+    },
+    {
+      "id": "snapshot-diff",
+      "query": "snapshot diff retained changelog id historical source",
+      "baseline_terms": ["snapshot", "diff", "changelog", "retained"],
+      "gold_files": ["src/retrieval/engine.ts", "src/tools/diff.ts"]
+    }
+  ]
+}

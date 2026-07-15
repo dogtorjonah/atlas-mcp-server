@@ -83,11 +83,11 @@ or product claims.
 Removal verification completed on 2026-07-14 for both `_legacy` rows,
 `src/tools/flush.ts`, and the duplicate nested migration: exact
 import/export/registration and migration-consumer scans found no incoming
-reachability; the production build and all seven Node tests passed; a clean
-tarball install imported every public entrypoint and applied all 17 direct
+reachability; the production build and 71-test serial suite passed; a clean
+tarball install imported every public entrypoint and applied all 20 direct
 migrations; and the reviewed manifest contains none of the removed files,
-provider markers, tests, source maps, raw source, or work records. The README and
-package identity rows remain open.
+provider markers, tests, source maps, raw source, or work records. The README,
+examples, package identity, MIT grant, and installed-package checks are closed.
 
 ## Data and artifact exclusions
 
@@ -119,28 +119,30 @@ Only these excluded concepts currently justify public interfaces:
    no canonical-event or witness default.
 5. **Repository adapter:** optional worktree/status/merge functions without
    automatic creation or host lifecycle authority.
-6. **Context Warp `FileMetaProvider`:** optional adapter supplying Atlas purpose,
-   blurb, tags, highlights, and hazards while both cores remain independent.
+6. **Context Warp receipt adapter:** the separate
+   `@voxxo/atlas-context-warp` package maps digest-only public prepare receipts
+   into protocol-v1 Atlas provenance evidence while both cores remain
+   dependency-independent.
 
 Claims, chatroom, task rails, Ambient Atlas, Therapy Atlas, and Mission Control do
 not receive placeholder interfaces in the standalone core.
 
 ## Verification checklist
 
-- [ ] Searches for Therapy Atlas names return only explicit exclusion or migration
+- [x] Searches for Therapy Atlas names return only explicit exclusion or migration
       history documentation.
 - [x] Current API/schema/tool names use operator memory; the legacy personal table
       exists only during supported upgrade history.
-- [ ] No relay, claims, squad, chatroom, task-rail, Ambient Atlas, or canonical
+- [x] No relay, claims, squad, chatroom, task-rail, Ambient Atlas, or canonical
       event import is reachable from public package exports.
-- [ ] No production runtime data or private path appears in tracked or packed
+- [x] No production runtime data or private path appears in tracked or packed
       artifacts.
 - [x] Excluded `_legacy` source and the unregistered flush surface are removed
       after reachability, license, build, test, and package checks.
 - [x] The duplicate nested migration is removed after package-consumer and
       fresh-install verification.
-- [ ] Worktree tools cannot implicitly create a worktree.
-- [ ] Optional providers degrade explicitly and do not fabricate missing evidence.
-- [ ] Public documentation distinguishes excluded integration from missing work.
+- [x] Worktree tools cannot implicitly create a worktree.
+- [x] Optional providers degrade explicitly and do not fabricate missing evidence.
+- [x] Public documentation distinguishes excluded integration from missing work.
 - [x] Package allowlist, generated-output denylist, and clean-install checks pass
       on the current exact tarball; repeat privacy scans after final identity work.

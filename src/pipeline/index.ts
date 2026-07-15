@@ -748,10 +748,14 @@ export async function runRuntimeReindex(
     };
   }
 
-  const result = await runSequentialPipelineBatch('reindex', scan.files, context);
+  const requestedPaths = new Set(options.files ?? []);
+  const selectedFiles = options.files == null
+    ? scan.files
+    : scan.files.filter((file) => requestedPaths.has(file.filePath));
+  const result = await runSequentialPipelineBatch('reindex', selectedFiles, context);
   rebuildFts(db);
 
-  return buildResult(scan.files.length, result.failed, 0);
+  return buildResult(selectedFiles.length, result.failed, 0);
 }
 
 export async function runFullPipeline(projectDir: string, config: AtlasPipelineConfig): Promise<FullPipelineResult> {

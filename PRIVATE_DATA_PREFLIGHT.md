@@ -46,15 +46,17 @@ publication subject to the provenance-adapter contract.
 
 ## Current package-surface finding
 
-The current dry-run package has a **release-clean file surface** but still carries
-the pre-promotion identity and license:
+The current dry-run package has a **release-clean file surface** and the intended
+1.0 release identity:
 
-- identity: `@voxxo/atlas@0.1.0`;
-- 140 entries after adding the public architecture contract and standalone `0017`;
+- identity: `@voxxo/atlas@1.0.0`, license `MIT`;
+- 219 allowlisted entries after the complete service, public documentation,
+  20-migration lineage, notices, and CycloneDX SBOM;
 - exact size is re-measured by the package smoke after every public-document change;
 - no bundled npm dependencies;
-- explicit roots: `dist`, 18 direct migrations, README, ARCHITECTURE, LICENSE,
-  `THIRD_PARTY_NOTICES.md`, and npm-required `package.json`.
+- explicit roots: `dist`, 20 direct migrations, public README/API/architecture,
+  security/upgrade/contribution/changelog/data/tool documentation, runnable
+  examples, MIT/relicensing/third-party notices, SBOM, and `package.json`.
 
 The exact manifest contains no raw source, tests, source maps, AGENTS, promotion
 records, compiler cache, database/runtime artifact, legacy provider, unregistered
@@ -95,17 +97,17 @@ These findings are intentional and may remain:
 
 | Finding | Status | Required remediation or closure evidence |
 | --- | --- | --- |
-| Root AGPL license and AGPL root metadata | Open — replace | MIT implementation batch and metadata consistency gate |
-| Historical operator-memory storage uses a personal-name table | Closed | Standalone `0017_operator_memory.sql` performs a data-preserving rename; current code writes only `atlas_operator_memory`; focused fresh/upgrade tests preserve row IDs, duplicate dedupe keys, and changelog relationships; the exact 18-migration package smoke exposes only neutral schema objects at head |
+| Root AGPL license and AGPL root metadata | Closed | Root license uses the standard MIT text; manifest, lock root, installed tarball manifest, README, SBOM component, changelog, and upgrade guide agree on MIT; AGPL appears only as explicit history |
+| Historical operator-memory storage uses a personal-name table | Closed | Standalone `0017_operator_memory.sql` performs a data-preserving rename; current code writes only `atlas_operator_memory`; focused fresh/upgrade tests preserve row IDs, duplicate dedupe keys, and changelog relationships; the exact 20-migration package smoke exposes only neutral schema objects at head |
 | Hard-coded developer home fallback in `src/tools/bridge.ts` | Closed | Replaced with `os.homedir()`; focused typecheck and seven-test Node suite pass |
 | Internal rail, implementation-step, and numbered-rollout breadcrumbs in public source/comments/log text | Closed | Rewritten as stable product rationale; exact-token scrub scanner returns no matches |
 | Private host implementation paths in current public source comments | Closed | Replaced with public symbols and schema descriptions; promotion provenance records retain explicit origins |
 | Dormant `_legacy` providers/pipelines and unregistered flush surface | Closed | Atlas/index evidence was incomplete, so exact imports, exports, server registration, and entrypoint scans proved zero incoming reachability; deletion followed; build and seven tests pass; the 286-entry package manifest contains none of the removed paths, provider names, endpoints, or API-key markers |
-| No package `files` allowlist; tests, AGENTS, work records, source, and duplicate migration are packed | Closed | The explicit manifest allowlist produces 140 reviewed entries, including the public architecture contract and standalone `0017`; no test, source map, raw source, work record, cache, database, or local artifact is present |
-| `migrations/migrations/0001_init.sql` duplicate | Closed | Non-recursive loader and exact reference scans proved no consumer; source deleted; clean tarball install applied all 18 direct migrations to a fresh database |
-| Current package identity/version/license do not match the planned public `v1.0.0` MIT release | Open — replace | Freeze product/package identity, update manifest/lockfile, then verify registry previews |
-| Current source scan does not cover generated `dist` or source maps | Closed for current tree; repeat at final gate | Clean release build emits no source maps; generated and installed trees pass the denylist; final exact-version artifact scan remains mandatory |
-| Monorepo-scoped Forge dependency security gate cannot discover the standalone workspace | Open — replace evidence path | Add standalone SBOM/security runner or a generic Forge workspace root before final gate |
+| No package `files` allowlist; tests, AGENTS, work records, source, and duplicate migration are packed | Closed | The explicit manifest allowlist produces 219 reviewed entries; no test, source map, raw TypeScript source, work record, cache, database, adapter source, or local artifact is present |
+| `migrations/migrations/0001_init.sql` duplicate | Closed | Non-recursive loader and exact reference scans proved no consumer; source deleted; clean tarball install applies all 20 direct migrations to a fresh database |
+| Current package identity/version/license do not match the planned public `v1.0.0` MIT release | Closed locally | Manifest, lock, SBOM, packed manifest, installed manifest, binaries, and documentation agree; public registry preview remains a final operator release check |
+| Current source scan does not cover generated `dist` or source maps | Closed for the current candidate; repeat at publish gate | Clean release build emits no source maps; generated, packed, and installed trees pass the allowlist/denylist; final artifact digest must be retained |
+| Monorepo-scoped Forge dependency security gate cannot discover the standalone workspace | Closed with standalone evidence | Forge was attempted and reported zero scanned standalone workspaces; npm's registry audit then ran directly against this lock and reports zero vulnerabilities, while the deterministic CycloneDX SBOM covers 144 runtime components and is checked by the release runner |
 
 None of these blockers is approved for the final package. The task rail contains
 or receives explicit implementation rows, and the final privacy gate stays before
@@ -119,12 +121,11 @@ names and no hidden system instructions, provider keys, operator details, exampl
 repositories, or private source fragments. They are approved as public product
 source.
 
-The current repository has no dedicated fixture directory and no tracked binary,
-image, transcript, dataset, or model artifact. Future fixtures must use synthetic
-repository names, synthetic IDs, non-routable example domains, and clearly fake
-credentials. Production database rows or transcripts may never be anonymized and
-reused as fixtures without a separate privacy review; build synthetic fixtures
-instead.
+The current repository includes deterministic small and medium synthetic fixture
+repositories plus public contract fixtures. They use invented source, IDs,
+histories, migrations, and package names; no production database row or transcript
+was copied. The repository has no tracked private binary, image, transcript,
+dataset, or model artifact. Future fixtures follow the same synthetic-only rule.
 
 ## Final automated gate
 
@@ -148,13 +149,15 @@ The allowlist is path- and context-specific. A global string allowlist for
 `Jonah`, `AGPL`, `therapy`, `instance_id`, or `relay/src` is forbidden because it
 would hide a real leak in source or generated output.
 
-## Initial preflight verdict
+## Current preflight verdict
 
 No credential, private runtime data, private hostname, proprietary fixture, live
 instance identifier, or private binary asset was found.
 
-The repository is **not yet publication-ready** because compatibility names and old
-release metadata remain. The public-source path, process-breadcrumb,
-dormant-provider, duplicate-migration, and package-surface findings are closed.
-The remaining open rows above are explicit release blockers, not secret findings;
-rerun this preflight on the exact artifact before `v1.0.0` publication.
+The source and current packed candidate are locally publication-clean: no known
+credential, vulnerable production dependency, private runtime data, excluded
+implementation, stale project license, or unexpected package path remains. This
+is not a publication claim: the immutable release commit/tag, final artifact
+digest, registry preview, publish action, and post-publication verification are
+still operator-controlled final gates. Rerun the exact-artifact checks after the
+release commit is frozen and do not rebuild between verification and publication.

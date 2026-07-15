@@ -1,313 +1,288 @@
 #!/usr/bin/env node
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import fs from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
-import { createInterface } from 'node:readline/promises';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { pathToFileURL } from 'node:url';
+
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { openAtlasDatabase } from './db.js';
-import { loadAtlasConfig } from './config.js';
-import { runFullPipeline } from './pipeline/index.js';
-import { startAtlasWatcher } from './watcher.js';
-import { registerChangelogTools } from './tools/changelog.js';
-import { registerCommitTool } from './tools/commit.js';
-import { registerDiffTool } from './tools/diff.js';
-import { registerWorktreeTools } from './tools/worktree.js';
-// Composite tools (21 → 5 consolidation — individual tools removed)
-import { registerQueryTool } from './tools/query.js';
-import { registerGraphCompositeTool } from './tools/graphComposite.js';
-import { registerAuditTool } from './tools/audit.js';
-import { registerAdminTool } from './tools/admin.js';
-import { ATLAS_CONTEXT_RESOURCE_URI, generateContextResource } from './resources/context.js';
-import type { AtlasRuntime } from './types.js';
 
-function parseInitArgs(argv: string[]): {
-  targetRoot: string;
-  configArgs: string[];
-  useWizard: boolean;
-  force: boolean;
-  phase?: 'crossref';
-  files: string[];
-} {
-  const configArgs: string[] = [];
-  const files: string[] = [];
-  let force = false;
-  let wizardRequested = false;
-  let phase: 'crossref' | undefined;
-  let targetRoot = process.cwd();
-  let targetAssigned = false;
+import type {
+  AtlasAdminRequest,
+  AtlasAuditRequest,
+  AtlasCommitRequest,
+  AtlasGraphRequest,
+  AtlasQueryRequest,
+  AtlasResult,
+} from './core/types.js';
+import { watchAtlasRepository } from './indexing/index.js';
+import { createAtlasMcpServer } from './mcp/index.js';
+import {
+  initializeAtlasNodeLayout,
+  openAtlasNodeHost,
+  resolveAtlasNodeLayout,
+  type AtlasDataMode,
+  type OpenAtlasNodeHostOptions,
+} from './node/index.js';
 
+interface ParsedArguments {
+  positionals: string[];
+  flags: Map<string, string | boolean | string[]>;
+}
+
+const GLOBAL_FLAGS = new Set([
+  'source-root', 'workspace', 'config', 'format', 'db', 'data-mode', 'transport',
+  'request', 'debounce-ms', 'no-index', 'full', 'no-backup', 'protected',
+  'include-optional', 'include-unavailable', 'dry-run',
+]);
+
+function parseArguments(argv: string[]): ParsedArguments {
+  const positionals: string[] = [];
+  const flags = new Map<string, string | boolean | string[]>();
   for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg) continue;
-
-    if (arg === '--yes') {
-      // No-op: retained for CLI compat but no cost confirmation needed
+    const token = argv[index];
+    if (!token?.startsWith('--')) {
+      if (token) positionals.push(token);
       continue;
     }
-    if (arg === '--wizard') {
-      wizardRequested = true;
-      continue;
-    }
-    if (arg === '--force') {
-      force = true;
-      continue;
-    }
-    if (arg === '--phase') {
-      const value = argv[index + 1];
-      if (value === 'crossref') {
-        phase = 'crossref';
-      }
-      if (value) {
-        index += 1;
-      }
-      continue;
-    }
-    if (arg === '--file') {
-      const value = argv[index + 1];
-      if (value) {
-        files.push(value);
-        index += 1;
-      }
-      continue;
-    }
-    if (arg.startsWith('--')) {
-      configArgs.push(arg);
-      const value = argv[index + 1];
-      if (value && !value.startsWith('--')) {
-        configArgs.push(value);
-        index += 1;
-      }
-      continue;
-    }
-    if (!targetAssigned) {
-      targetRoot = path.resolve(arg);
-      targetAssigned = true;
-      continue;
-    }
-    configArgs.push(arg);
+    const equal = token.indexOf('=');
+    const name = token.slice(2, equal < 0 ? undefined : equal);
+    const inline = equal < 0 ? undefined : token.slice(equal + 1);
+    const next = argv[index + 1];
+    const value: string | boolean = inline ?? (next && !next.startsWith('--') ? next : true);
+    if (inline == null && value === next) index += 1;
+    const previous = flags.get(name);
+    flags.set(name, previous == null ? value : Array.isArray(previous) ? [...previous, String(value)] : [String(previous), String(value)]);
   }
+  return { positionals, flags };
+}
 
-  const useWizard = wizardRequested || (argv.length === 0 && process.stdin.isTTY && process.stdout.isTTY);
+function one(flags: ParsedArguments['flags'], name: string): string | undefined {
+  const value = flags.get(name);
+  if (Array.isArray(value)) return value.at(-1);
+  return typeof value === 'string' ? value : undefined;
+}
+
+function present(flags: ParsedArguments['flags'], name: string): boolean {
+  return flags.has(name);
+}
+
+function scalar(value: string | boolean | string[]): unknown {
+  if (Array.isArray(value)) return value.map((entry) => scalar(entry));
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (value === 'null') return null;
+  if (/^-?\d+(?:\.\d+)?$/u.test(value)) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  if ((value.startsWith('[') && value.endsWith(']')) || (value.startsWith('{') && value.endsWith('}'))) {
+    return JSON.parse(value) as unknown;
+  }
+  return value;
+}
+
+function camelKey(value: string): string {
+  return value.replace(/-([a-z])/gu, (_, letter: string) => letter.toUpperCase());
+}
+
+async function stdinText(): Promise<string> {
+  let result = '';
+  for await (const chunk of process.stdin) result += String(chunk);
+  return result;
+}
+
+async function explicitRequest(parsed: ParsedArguments): Promise<Record<string, unknown> | null> {
+  const reference = one(parsed.flags, 'request');
+  if (!reference) return null;
+  const text = reference === '-' ? await stdinText()
+    : reference.startsWith('@') ? await readFile(path.resolve(reference.slice(1)), 'utf8')
+      : reference;
+  const request = JSON.parse(text) as unknown;
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('--request must resolve to a JSON object.');
+  }
+  const domainFlags = [...parsed.flags.keys()].filter((key) => !GLOBAL_FLAGS.has(key));
+  if (domainFlags.length > 0) throw new Error('--request cannot be combined with domain request flags.');
+  return request as Record<string, unknown>;
+}
+
+async function domainRequest(
+  parsed: ParsedArguments,
+  base: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  const explicit = await explicitRequest(parsed);
+  if (explicit) return { ...base, ...explicit };
+  const request: Record<string, unknown> = { ...base };
+  for (const [key, value] of parsed.flags) {
+    if (GLOBAL_FLAGS.has(key)) continue;
+    request[camelKey(key)] = scalar(value);
+  }
+  return request;
+}
+
+function nodeOptions(parsed: ParsedArguments, fallbackRoot = process.cwd()): OpenAtlasNodeHostOptions {
+  const dataMode = one(parsed.flags, 'data-mode');
+  if (dataMode && dataMode !== 'project' && dataMode !== 'user') throw new Error('--data-mode must be project or user.');
   return {
-    targetRoot,
-    configArgs,
-    useWizard,
-    force,
-    phase,
-    files,
+    sourceRoot: path.resolve(one(parsed.flags, 'source-root') ?? fallbackRoot),
+    ...(one(parsed.flags, 'workspace') ? { workspace: one(parsed.flags, 'workspace') } : {}),
+    ...(one(parsed.flags, 'db') ? { dbPath: one(parsed.flags, 'db') } : {}),
+    ...(dataMode ? { dataMode: dataMode as AtlasDataMode } : {}),
   };
 }
 
-/**
- * Auto-install atlas into Claude Code's global settings (~/.claude/settings.json).
- * Runs after every `atlas init` — idempotent, never prompts.
- */
-function installGlobalMcpConfig(): void {
-  try {
-    // Resolve the path to dist/server.js (works whether running via tsx or compiled)
-    const thisFile = fileURLToPath(import.meta.url);
-    const distServerJs = thisFile.endsWith('.ts')
-      ? path.resolve(path.dirname(thisFile), '..', 'dist', 'server.js')
-      : thisFile;
-
-    const claudeDir = path.join(os.homedir(), '.claude');
-    const settingsPath = path.join(claudeDir, 'settings.json');
-
-    let settings: Record<string, unknown> = {};
-    try {
-      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-    } catch {
-      // File doesn't exist or invalid JSON — start fresh
-    }
-
-    const mcpServers = (settings.mcpServers ?? {}) as Record<string, unknown>;
-    const existing = mcpServers.atlas as Record<string, unknown> | undefined;
-
-    // Check if already installed with the same path
-    if (existing && Array.isArray(existing.args) && existing.args[0] === distServerJs) {
-      console.log('[atlas-init] ✓ Claude Code global config already set');
-      return;
-    }
-
-    mcpServers.atlas = {
-      command: 'node',
-      args: [distServerJs],
-    };
-    settings.mcpServers = mcpServers;
-
-    fs.mkdirSync(claudeDir, { recursive: true });
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-    console.log('[atlas-init] ✓ Installed atlas into ~/.claude/settings.json (global)');
-    console.log('[atlas-init]   Atlas tools are now available in Claude Code for ALL repos.');
-  } catch (err) {
-    // Non-fatal — don't block init if we can't write settings
-    console.log(`[atlas-init] ⚠ Could not auto-install to Claude Code global config: ${err instanceof Error ? err.message : err}`);
-    console.log('[atlas-init]   You can manually add atlas to ~/.claude/settings.json');
-  }
+function render(result: unknown, format: string | undefined): void {
+  process.stdout.write(`${format === 'json' ? JSON.stringify(result) : JSON.stringify(result, null, 2)}\n`);
 }
 
-async function promptInitWizard(config: import('./types.js').AtlasServerConfig): Promise<import('./types.js').AtlasServerConfig> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    return config;
-  }
+function resultExitCode(result: AtlasResult<unknown>): number {
+  if (result.ok) return 0;
+  if (result.error.code === 'ATLAS_INVALID_REQUEST' || result.error.code === 'ATLAS_UNSUPPORTED_ACTION') return 2;
+  if (result.error.code === 'ATLAS_NOT_FOUND' || result.error.code === 'ATLAS_WORKSPACE_NOT_FOUND') return 3;
+  if (['ATLAS_CAPABILITY_UNAVAILABLE', 'ATLAS_PERMISSION_DENIED', 'ATLAS_BUSY', 'ATLAS_STORE_LOCKED', 'ATLAS_DEADLINE_EXCEEDED', 'ATLAS_CANCELLED'].includes(result.error.code)) return 4;
+  return 5;
+}
 
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    console.log('');
-    console.log('╔══════════════════════════════════════╗');
-    console.log('║       Atlas — Setup Wizard           ║');
-    console.log('╚══════════════════════════════════════╝');
-    console.log('');
-
-    // 1. Codebase path
-    const sourceRootAnswer = await rl.question(`  Codebase path [${config.sourceRoot}]: `);
-    const sourceRoot = path.resolve(sourceRootAnswer.trim() || config.sourceRoot);
-
-    // 2. Workspace name
-    const workspaceDefault = path.basename(sourceRoot).toLowerCase();
-    const workspaceAnswer = await rl.question(`  Workspace name [${workspaceDefault}]: `);
-    const workspace = workspaceAnswer.trim() || workspaceDefault;
-
-    // 3. Concurrency
-    const concurrencyAnswer = await rl.question(`  Concurrency [${config.concurrency}]: `);
-    const parsedConcurrency = Number.parseInt(concurrencyAnswer.trim(), 10);
-    const concurrency = Number.isFinite(parsedConcurrency) && parsedConcurrency > 0 ? parsedConcurrency : config.concurrency;
-
-    // Summary
-    console.log('');
-    console.log('  ─────────────────────────────────────');
-    console.log(`  Codebase:    ${sourceRoot}`);
-    console.log(`  Workspace:   ${workspace}`);
-    console.log(`  Pipeline:    deterministic (AST + import graph + cross-refs)`);
-    console.log(`  Concurrency: ${concurrency}`);
-    console.log('  ─────────────────────────────────────');
-    console.log('');
-
-    return {
-      ...config,
-      sourceRoot,
-      workspace,
-      dbPath: path.join(sourceRoot, '.atlas', 'atlas.sqlite'),
-      concurrency,
+async function runMcp(parsed: ParsedArguments): Promise<void> {
+  const transport = one(parsed.flags, 'transport');
+  if (transport && transport !== 'stdio') throw new Error('Only --transport stdio is supported.');
+  const host = await openAtlasNodeHost(nodeOptions(parsed));
+  const server = createAtlasMcpServer(host.service, { workspace: host.layout.workspace, version: '1.0.0' });
+  await server.connect(new StdioServerTransport());
+  await new Promise<void>((resolve) => {
+    let closing = false;
+    const close = (): void => {
+      if (closing) return;
+      closing = true;
+      void server.server.close().catch(() => undefined)
+        .then(() => host.close().catch(() => undefined))
+        .then(resolve);
     };
+    process.once('SIGINT', close);
+    process.once('SIGTERM', close);
+    process.stdin.once('close', close);
+  });
+}
+
+async function runWatch(parsed: ParsedArguments): Promise<void> {
+  const host = await openAtlasNodeHost(nodeOptions(parsed));
+  const debounceMs = Number(one(parsed.flags, 'debounce-ms') ?? 250);
+  if (!Number.isFinite(debounceMs) || debounceMs < 0) throw new Error('--debounce-ms must be a finite non-negative number.');
+  const selected = parsed.positionals.slice(1);
+  const watcher = await watchAtlasRepository({
+    sourceRoot: host.layout.sourceRoot,
+    debounceMs,
+    onBatch: async (changes) => {
+      const paths = changes.map((change) => change.filePath)
+        .filter((filePath) => selected.length === 0 || selected.some((prefix) => filePath === prefix || filePath.startsWith(`${prefix}/`)));
+      if (paths.length === 0) return;
+      const result = await host.service.admin({ action: 'index', paths });
+      if (!result.ok) process.stderr.write(`${result.error.code}: ${result.error.message}\n`);
+    },
+  });
+  await new Promise<void>((resolve) => {
+    let closing = false;
+    const close = (): void => {
+      if (closing) return;
+      closing = true;
+      void watcher.close().catch(() => undefined).then(() => host.close()).then(resolve);
+    };
+    process.once('SIGINT', close);
+    process.once('SIGTERM', close);
+  });
+}
+
+async function runServiceCommand(parsed: ParsedArguments): Promise<number> {
+  const command = parsed.positionals[0];
+  const host = await openAtlasNodeHost(nodeOptions(parsed));
+  try {
+    let result: AtlasResult<unknown>;
+    if (command === 'query') {
+      result = await host.service.query(await domainRequest(parsed, { action: parsed.positionals[1] }) as unknown as AtlasQueryRequest);
+    } else if (command === 'graph') {
+      result = await host.service.graph(await domainRequest(parsed, { action: parsed.positionals[1] }) as unknown as AtlasGraphRequest);
+    } else if (command === 'audit') {
+      result = await host.service.audit(await domainRequest(parsed, { action: parsed.positionals[1] }) as unknown as AtlasAuditRequest);
+    } else if (command === 'commit') {
+      const request = await explicitRequest(parsed);
+      if (!request) throw new Error('atlas commit requires --request <json|@file|->.');
+      result = await host.service.commit(request as unknown as AtlasCommitRequest);
+    } else if (command === 'diff' || command === 'snapshot') {
+      result = await host.service.query(await domainRequest(parsed, { action: command }) as unknown as AtlasQueryRequest);
+    } else {
+      const action = command === 'index' ? 'index'
+        : command === 'migrate' ? 'migrate'
+          : command === 'backup' ? 'backup'
+            : command === 'doctor' ? 'doctor'
+              : parsed.positionals[0] === 'workspace' && parsed.positionals[1] === 'list' ? 'workspace_list'
+                : null;
+      if (!action) throw new Error(`Unknown Atlas command: ${parsed.positionals.join(' ')}`);
+      const base: Record<string, unknown> = { action };
+      if (action === 'index') {
+        const paths = parsed.positionals.slice(1);
+        if (paths.length > 0) base.paths = paths;
+        if (present(parsed.flags, 'full')) base.full = true;
+      }
+      if (action === 'migrate') {
+        if (present(parsed.flags, 'dry-run')) base.dryRun = true;
+        if (present(parsed.flags, 'no-backup')) base.backup = false;
+      }
+      if (action === 'backup' && present(parsed.flags, 'protected')) base.protected = true;
+      if (action === 'doctor' && present(parsed.flags, 'include-optional')) base.includeOptional = true;
+      if (action === 'workspace_list' && present(parsed.flags, 'include-unavailable')) base.includeUnavailable = true;
+      result = await host.service.admin(await domainRequest(parsed, base) as unknown as AtlasAdminRequest);
+    }
+    render(result, one(parsed.flags, 'format'));
+    return resultExitCode(result);
   } finally {
-    rl.close();
+    await host.close();
   }
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
-  const isInit = argv[0] === 'init';
-  const initArgs = isInit ? parseInitArgs(argv.slice(1)) : null;
-  let targetRoot = isInit ? initArgs?.targetRoot ?? process.cwd() : process.cwd();
-  const configArgs = isInit ? initArgs?.configArgs ?? [] : argv;
-  const config = loadAtlasConfig(configArgs, {
-    sourceRoot: targetRoot,
-    dbPath: path.join(targetRoot, '.atlas', 'atlas.sqlite'),
-    workspace: path.basename(targetRoot).toLowerCase(),
-  });
-
-  if (isInit) {
-    const initConfig = initArgs?.useWizard ? await promptInitWizard(config) : config;
-    targetRoot = initConfig.sourceRoot;
-    if (initArgs?.force) {
-      console.log('[atlas-init] --force supplied; database will be deleted and rebuilt from scratch');
+  const parsed = parseArguments(argv);
+  let command = parsed.positionals[0];
+  if (!command) {
+    process.stderr.write('atlas without a command is deprecated; use `atlas mcp`.\n');
+    command = 'mcp';
+    parsed.positionals.unshift(command);
+  }
+  if (command === 'mcp') return runMcp(parsed);
+  if (command === 'watch') return runWatch(parsed);
+  if (command === 'init') {
+    const repository = parsed.positionals[1] ?? process.cwd();
+    const options = nodeOptions(parsed, repository);
+    const layout = await initializeAtlasNodeLayout(options);
+    let index: AtlasResult<unknown> | undefined;
+    if (!present(parsed.flags, 'no-index')) {
+      const host = await openAtlasNodeHost(options);
+      try {
+        index = await host.service.admin({ action: 'index', full: true });
+      } finally {
+        await host.close();
+      }
     }
-
-    console.log('[atlas-init] starting heuristic pipeline');
-    await runFullPipeline(targetRoot, {
-      ...initConfig,
-      sourceRoot: targetRoot,
-      dbPath: initConfig.dbPath,
-      concurrency: initConfig.concurrency,
-      migrationDir: fileURLToPath(new URL('../migrations/', import.meta.url)),
-      force: initArgs?.force ?? false,
-      phase: initArgs?.phase,
-      files: initArgs?.files,
-    });
-
-    // Auto-install atlas MCP server into Claude Code global settings
-    installGlobalMcpConfig();
-
+    render({ layout, ...(index ? { index } : {}) }, one(parsed.flags, 'format'));
+    if (index && !index.ok) process.exitCode = resultExitCode(index);
     return;
   }
-
-  const migrationDir = fileURLToPath(new URL('../migrations/', import.meta.url));
-  const db = openAtlasDatabase({
-    dbPath: config.dbPath,
-    migrationDir,
-    sqliteVecExtension: config.sqliteVecExtension,
-  });
-
-  const runtime: AtlasRuntime = { config, db };
-
-  const server = new McpServer({
-    name: '@voxxo/atlas',
-    version: '0.1.0',
-  });
-  runtime.server = server;
-
-  server.resource(
-    'Atlas Codebase Context',
-    ATLAS_CONTEXT_RESOURCE_URI,
-    {
-      description: 'Auto-updated codebase context. Subscribe for automatic injection of relevant file knowledge on every change.',
-      mimeType: 'text/markdown',
-    },
-    async () => ({
-      contents: [{
-        uri: ATLAS_CONTEXT_RESOURCE_URI,
-        mimeType: 'text/markdown',
-        text: generateContextResource(db, runtime.config.workspace),
-      }],
-    }),
-  );
-
-  // ── Standalone tools (not in any composite) ──
-  registerChangelogTools(server, runtime);
-  registerCommitTool(server, runtime);
-  registerDiffTool(server, runtime);
-  registerWorktreeTools(server, runtime);
-
-  // ── Composite tools (21 → 5 consolidation) ──
-  // atlas_query:  search, lookup, brief, snippet, similar, plan_context, cluster, patterns, history, catalog, ask
-  // atlas_graph:  impact, neighbors, trace, cycles, reachability, graph, cluster
-  // atlas_audit:  gaps, smells, hotspots
-  // atlas_admin:  reindex, bridge_list
-  registerQueryTool(server, runtime);
-  registerGraphCompositeTool(server, runtime);
-  registerAuditTool(server, runtime);
-  registerAdminTool(server, runtime);
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  const stopWatcher = startAtlasWatcher(runtime);
-  const shutdown = (): void => {
-    stopWatcher();
-    try {
-      db.close();
-    } catch {
-      // ignore close-on-shutdown races
-    }
-  };
-
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
-  process.stdin.once('close', shutdown);
+  if (command === 'config' && parsed.positionals[1] === 'show') {
+    const layout = await resolveAtlasNodeLayout(nodeOptions(parsed));
+    render({ sourceRoot: layout.sourceRoot, workspace: layout.workspace, dataMode: layout.dataMode, dbPath: layout.dbPath }, one(parsed.flags, 'format'));
+    return;
+  }
+  if (command === 'worktree') {
+    render({ protocol_version: '1', ok: false, error: { code: 'ATLAS_CAPABILITY_UNAVAILABLE', message: 'Worktree commands require an optional repository lifecycle adapter.', retryable: false } }, one(parsed.flags, 'format'));
+    process.exitCode = 4;
+    return;
+  }
+  process.exitCode = await runServiceCommand(parsed);
 }
 
 const entrypoint = process.argv[1];
-
 if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
   void main().catch((error: unknown) => {
-    const message = error instanceof Error ? error.stack ?? error.message : String(error);
-    console.error(message);
-    process.exitCode = 1;
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 2;
   });
 }

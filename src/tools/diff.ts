@@ -632,6 +632,7 @@ export interface DiffOptions {
   from: string;
   to: string;
   mode: 'unified' | 'stat';
+  contextLines?: number;
   workspace?: string;
 }
 
@@ -678,7 +679,7 @@ export function computeDiff(runtime: AtlasRuntime, options: DiffOptions): DiffRe
   if (oldHash === newHash) {
     diffContent = '';
   } else {
-    diffContent = computeUnifiedDiff(oldLines, newLines);
+    diffContent = computeUnifiedDiff(oldLines, newLines, options.contextLines ?? 3);
   }
 
   // Get source highlights for annotation

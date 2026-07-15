@@ -17,8 +17,11 @@ import {
   upsertFileRecord,
   type AtlasDatabase,
 } from '../db.js';
-import { canonicalizeWorkspaceName } from '../core/paths.js';
+import { canonicalizeRepositoryPath, canonicalizeWorkspaceName } from '../core/paths.js';
 import { runRuntimeReindex } from '../pipeline/index.js';
+import { executeAtlasRead } from '../retrieval/engine.js';
+import { executeAtlasCommit } from '../writeback/commit.js';
+import { AtlasWritebackError } from '../writeback/types.js';
 import {
   ATLAS_WORKER_PROTOCOL_VERSION,
   AtlasPersistenceError,
@@ -286,12 +289,23 @@ function verifyBackup(backupPath: string): boolean {
   }
 }
 
-function createBackup(): AtlasBackupRecord {
+function createBackup(input: AtlasDbOperationPayloads['backup'] = {}): AtlasBackupRecord {
   if (!database || !status) throw persistenceError('ATLAS_WORKER_UNAVAILABLE', 'Store is not ready.', true);
   fs.mkdirSync(options.backupDir, { recursive: true });
   const createdAt = new Date().toISOString();
   const stamp = createdAt.replace(/[:.]/g, '-');
-  const backupId = `${path.basename(options.dbPath, path.extname(options.dbPath))}_${stamp}_${randomUUID()}.sqlite`;
+  const label = typeof input.label === 'string' && /^[a-zA-Z0-9._-]{1,64}$/u.test(input.label)
+    ? input.label
+    : undefined;
+  if (input.label != null && !label) {
+    throw persistenceError('ATLAS_INVALID_REQUEST', 'Backup label must be a 1 to 64 character slug.', false);
+  }
+  const protectedBackup = input.protected ?? false;
+  if (typeof protectedBackup !== 'boolean') {
+    throw persistenceError('ATLAS_INVALID_REQUEST', 'Backup protected must be a boolean.', false);
+  }
+  const markers = [label, protectedBackup ? 'protected' : null].filter(Boolean).join('_');
+  const backupId = `${path.basename(options.dbPath, path.extname(options.dbPath))}_${stamp}${markers ? `_${markers}` : ''}_${randomUUID()}.sqlite`;
   const backupPath = path.join(options.backupDir, backupId);
   database.exec(`VACUUM INTO '${backupPath.replaceAll("'", "''")}'`);
   if (!verifyBackup(backupPath)) {
@@ -303,7 +317,8 @@ function createBackup(): AtlasBackupRecord {
     .filter((filename) => filename.startsWith(prefix) && filename.endsWith('.sqlite'))
     .sort()
     .reverse();
-  for (const expired of backups.slice(5)) {
+  const expirable = backups.filter((filename) => !filename.includes('_protected_'));
+  for (const expired of expirable.slice(5)) {
     fs.rmSync(path.join(options.backupDir, expired), { force: true });
   }
   return {
@@ -312,6 +327,8 @@ function createBackup(): AtlasBackupRecord {
     path: backupPath,
     integrity: 'ok',
     migrationHead: status.migrationHead,
+    ...(label ? { label } : {}),
+    protected: protectedBackup,
   };
 }
 
@@ -360,6 +377,7 @@ function recoverLatestBackup(): AtlasBackupRecord | null {
       path: backupPath,
       integrity: 'ok',
       migrationHead: null,
+      protected: filename.includes('_protected_'),
     };
   }
   return null;
@@ -388,6 +406,17 @@ function executeOperation<Operation extends AtlasDbOperation>(
     case 'list-files': {
       const input = payload as AtlasDbOperationPayloads['list-files'];
       return listAtlasFiles(database, input.workspace) as AtlasDbOperationResults[Operation];
+    }
+    case 'list-workspaces': {
+      const rows = database.prepare(
+        `SELECT workspace FROM atlas_meta
+         UNION SELECT workspace FROM atlas_files
+         UNION SELECT workspace FROM atlas_changelog
+         ORDER BY workspace ASC`,
+      ).all() as Array<{ workspace?: unknown }>;
+      return rows
+        .map((row) => String(row.workspace ?? ''))
+        .filter((workspace) => canonicalizeWorkspaceName(workspace).ok) as AtlasDbOperationResults[Operation];
     }
     case 'search-fts': {
       const input = payload as AtlasDbOperationPayloads['search-fts'];
@@ -429,48 +458,77 @@ function executeOperation<Operation extends AtlasDbOperation>(
         'Repository indexing requires the asynchronous worker dispatch path.',
         false,
       );
+    case 'retrieve':
+      throw persistenceError(
+        'ATLAS_INVALID_REQUEST',
+        'Structured retrieval requires the asynchronous worker dispatch path.',
+        false,
+      );
+    case 'commit-file': {
+      const input = payload as AtlasDbOperationPayloads['commit-file'];
+      return executeAtlasCommit(database, input) as AtlasDbOperationResults[Operation];
+    }
     case 'backup':
-      return createBackup() as AtlasDbOperationResults[Operation];
+      return createBackup(payload as AtlasDbOperationPayloads['backup']) as AtlasDbOperationResults[Operation];
   }
 }
 
 function executeIdempotently<Operation extends AtlasDbOperation>(
   request: AtlasWorkerRequest<AtlasDbOperationPayloads[Operation]>,
 ): AtlasDbOperationResults[Operation] {
-  if (!database || !request.idempotencyKey || request.workClass !== 'db-write') {
+  if (!database || request.workClass !== 'db-write') {
     return executeOperation(request.operation as Operation, request.payload);
   }
-  const payloadHash = checksum(canonicalJson(request.payload));
-  const existing = database.prepare(
-    'SELECT operation, payload_hash, result_json FROM atlas_operation_idempotency WHERE idempotency_key = ?',
-  ).get(request.idempotencyKey) as
-    | { operation: string; payload_hash: string; result_json: string }
-    | undefined;
-  if (existing) {
-    if (existing.operation !== request.operation || existing.payload_hash !== payloadHash) {
-      throw persistenceError(
-        'ATLAS_CONFLICT',
-        'Idempotency key was already used with a different operation or payload.',
-        false,
-        { idempotencyKey: request.idempotencyKey },
-      );
-    }
-    return JSON.parse(existing.result_json) as AtlasDbOperationResults[Operation];
-  }
-
+  const workspace = request.payload && typeof request.payload === 'object'
+    && 'workspace' in request.payload && typeof request.payload.workspace === 'string'
+    ? request.payload.workspace
+    : '';
+  const storedIdempotencyKey = request.idempotencyKey
+    ? `${workspace}\u0000${request.idempotencyKey}`
+    : undefined;
   const transaction = database.transaction(() => {
     const result = executeOperation(request.operation as Operation, request.payload);
-    database?.prepare(
-      `INSERT INTO atlas_operation_idempotency
-       (idempotency_key, operation, payload_hash, result_json) VALUES (?, ?, ?, ?)`,
-    ).run(request.idempotencyKey, request.operation, payloadHash, JSON.stringify(result));
+    if (storedIdempotencyKey) {
+      const payloadHash = checksum(canonicalJson(request.payload));
+      database?.prepare(
+        `INSERT INTO atlas_operation_idempotency
+         (idempotency_key, operation, payload_hash, result_json) VALUES (?, ?, ?, ?)`,
+      ).run(storedIdempotencyKey, request.operation, payloadHash, JSON.stringify(result));
+    }
     return result;
   });
+  if (storedIdempotencyKey) {
+    const payloadHash = checksum(canonicalJson(request.payload));
+    const existing = database.prepare(
+      'SELECT operation, payload_hash, result_json FROM atlas_operation_idempotency WHERE idempotency_key = ?',
+    ).get(storedIdempotencyKey) as
+      | { operation: string; payload_hash: string; result_json: string }
+      | undefined;
+    if (existing) {
+      if (existing.operation !== request.operation || existing.payload_hash !== payloadHash) {
+        throw persistenceError(
+          'ATLAS_CONFLICT',
+          'Idempotency key was already used with a different operation or payload.',
+          false,
+          { idempotencyKey: request.idempotencyKey },
+        );
+      }
+      return JSON.parse(existing.result_json) as AtlasDbOperationResults[Operation];
+    }
+  }
   return transaction() as AtlasDbOperationResults[Operation];
 }
 
 function normalizeOperationError(error: unknown): AtlasPersistenceError {
   if (error instanceof AtlasPersistenceError) return error;
+  if (error instanceof AtlasWritebackError) {
+    return persistenceError(
+      error.code === 'WRITE_CONFLICT' ? 'ATLAS_CONFLICT' : 'ATLAS_INVALID_REQUEST',
+      error.message,
+      false,
+      error.details,
+    );
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (/database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(message)) {
     return persistenceError('ATLAS_STORE_LOCKED', message, true);
@@ -525,6 +583,29 @@ async function executeIndexRepository(
   if (value.mode != null && !['full', 'incremental', 'repair'].includes(value.mode)) {
     throw persistenceError('ATLAS_INVALID_REQUEST', 'Index mode is not supported.', false);
   }
+  if (value.phase != null && !['full', 'crossref'].includes(value.phase)) {
+    throw persistenceError('ATLAS_INVALID_REQUEST', 'Index phase is not supported.', false);
+  }
+  let requestedPaths: string[] | undefined;
+  if (value.paths != null) {
+    if (!Array.isArray(value.paths) || value.paths.length === 0 || value.paths.length > 4_096) {
+      throw persistenceError('ATLAS_INVALID_REQUEST', 'Index paths must contain 1 to 4,096 entries.', false);
+    }
+    requestedPaths = value.paths.map((filePath) => {
+      if (typeof filePath !== 'string' || filePath.length > 4_096) {
+        throw persistenceError('ATLAS_INVALID_REQUEST', 'Index path is invalid.', false);
+      }
+      const canonical = canonicalizeRepositoryPath(filePath, {
+        workspace,
+        repositoryRoot: '/',
+        platform: 'posix',
+      });
+      if (!canonical.ok || canonical.path !== filePath || canonical.state !== 'current') {
+        throw persistenceError('ATLAS_INVALID_REQUEST', 'Index paths must be canonical repository-relative POSIX paths.', false);
+      }
+      return canonical.path;
+    });
+  }
   const requestedConcurrency = value.concurrency ?? 4;
   if (!Number.isFinite(requestedConcurrency) || requestedConcurrency < 1) {
     throw persistenceError('ATLAS_INVALID_REQUEST', 'Index concurrency must be a positive number.', false);
@@ -547,8 +628,20 @@ async function executeIndexRepository(
     rootDir: sourceRoot,
     concurrency,
     mode: value.mode ?? 'incremental',
+    ...(requestedPaths == null ? {} : { files: requestedPaths }),
+    ...(value.phase == null ? {} : { phase: value.phase }),
     ...(now == null ? {} : { now }),
   });
+}
+
+async function executeRetrieval(
+  request: AtlasWorkerRequest<AtlasDbOperationPayloads['retrieve']>,
+): Promise<AtlasDbOperationResults['retrieve']> {
+  if (!database) throw persistenceError('ATLAS_WORKER_UNAVAILABLE', 'Store is not ready.', true);
+  if (request.idempotencyKey) {
+    throw persistenceError('ATLAS_INVALID_REQUEST', 'Read operations do not accept idempotency keys.', false);
+  }
+  return executeAtlasRead(database, request.payload);
 }
 
 async function handleRequest(request: AtlasWorkerRequest): Promise<void> {
@@ -570,6 +663,15 @@ async function handleRequest(request: AtlasWorkerRequest): Promise<void> {
         request.requestId,
         await executeIndexRepository(
           request as AtlasWorkerRequest<AtlasDbOperationPayloads['index-repository']>,
+        ),
+      );
+      return;
+    }
+    if (request.operation === 'retrieve') {
+      respond(
+        request.requestId,
+        await executeRetrieval(
+          request as AtlasWorkerRequest<AtlasDbOperationPayloads['retrieve']>,
         ),
       );
       return;
